@@ -1,6 +1,7 @@
 # single-file-chacha20poly1305
 
 - To encrypt on the embeded system and decrypt on the server, or vice versa, chacha20-poly1305 can be processed in a single file.
+- It works if 32-bit integers are supported.
 
 ## USAGE
 
