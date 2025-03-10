@@ -32,6 +32,7 @@
 		UB	diff;
 		W	i;
 		
+		diff = 0;
 		for (i=0; i<sizeof(mac); i++)
 			diff |= mac[i] ^ newmac[i];
 		if ((diff))
