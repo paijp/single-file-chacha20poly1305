@@ -62,7 +62,7 @@ foreach ($newmac as $k => $v)
 	$diff |= $v ^ $mac[$k];
 if (($diff))
 	dia("digest not match.\n");
-$chacha20 = new chacha20->();
+$chacha20 = new chacha20();
 $plaintext = $chacha20->crypt($ciphertext, $key, $nonce);
 
 
