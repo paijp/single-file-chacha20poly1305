@@ -1,6 +1,14 @@
+/*
+	Single file chacha20poly1305 https://github.com/paijp/single-file-chacha20poly1305
+	
+	License: MIT or PUBLIC DOMAIN.
+*/
 
 #include	"c20p1305.h"
 #include	<stdio.h>
+
+
+/* from https://github.com/floodyberry/poly1305-donna */
 
 
 static	void	poly1305_auth(UB mac[16], const UB *m, W bytes, const UB key[32])

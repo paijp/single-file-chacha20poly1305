@@ -1,3 +1,8 @@
+/*
+	Single file chacha20poly1305 https://github.com/paijp/single-file-chacha20poly1305
+	
+	License: MIT or PUBLIC DOMAIN.
+*/
 
 #ifdef	__unix__		/* int=32bit */
 typedef	signed char	B;

@@ -5,8 +5,15 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
+
+
+## [0.1.0] - 2025-03-26
+### Added
+- Add comments for license.
+
 ### Fixed
-- README.me: fix sample.
+- README.md: fix sample.
+
 
 ## [0.0.0] - 2025-03-10
 ### Added

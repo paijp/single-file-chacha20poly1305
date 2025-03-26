@@ -1,5 +1,12 @@
 <?php
 
+/*
+	Single file chacha20poly1305 https://github.com/paijp/single-file-chacha20poly1305
+	
+	License: MIT or PUBLIC DOMAIN.
+*/
+
+
 /* from https://github.com/floodyberry/poly1305-donna */
 
 
