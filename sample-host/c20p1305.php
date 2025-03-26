@@ -1,0 +1,496 @@
+<?php
+
+/*
+	Single file chacha20poly1305 https://github.com/paijp/single-file-chacha20poly1305
+	
+	License: MIT or PUBLIC DOMAIN.
+*/
+
+
+/* from https://github.com/floodyberry/poly1305-donna */
+
+
+class	poly1305 {
+	var	$buffer;
+	var	$leftover;
+	var	$h, $r, $pad;
+	var	$final;
+	function	__construct($key) {
+		$this->leftover = 0;
+		
+	/* h = 0 */
+		$this->h = array();
+		for ($i=0; $i<17; $i++)
+			$this->h[$i] = 0;
+		
+	/* r &= 0xffffffc0ffffffc0ffffffc0fffffff */
+		$this->r = array();
+		$this->r[0] = $key[0] & 0xff;
+		$this->r[1] = $key[1] & 0xff;
+		$this->r[2] = $key[2] & 0xff;
+		$this->r[3] = $key[3] & 0x0f;
+		$this->r[4] = $key[4] & 0xfc;
+		$this->r[5] = $key[5] & 0xff;
+		$this->r[6] = $key[6] & 0xff;
+		$this->r[7] = $key[7] & 0x0f;
+		$this->r[8] = $key[8] & 0xfc;
+		$this->r[9] = $key[9] & 0xff;
+		$this->r[10] = $key[10] & 0xff;
+		$this->r[11] = $key[11] & 0x0f;
+		$this->r[12] = $key[12] & 0xfc;
+		$this->r[13] = $key[13] & 0xff;
+		$this->r[14] = $key[14] & 0xff;
+		$this->r[15] = $key[15] & 0x0f;
+		$this->r[16] = 0;
+		
+	/* save pad for later */
+		$this->pad = array();
+		for ($i=0; $i<16; $i++)
+			$this->pad[$i] = $key[$i + 16];
+		$this->pad[16] = 0;
+		
+		$this->final = 0;
+	}
+	function	add($c) {
+		$u = 0;
+		for ($i=0; $i<17; $i++) {
+			$u += $this->h[$i] + $c[$i];
+			$this->h[$i] = $u & 0xff;
+			$u >>= 8;
+		}
+	}
+	function	squeeze($hr) {
+		$u = 0;
+		for ($i=0; $i<16; $i++) {
+			$u += $hr[$i];
+			$this->h[$i] = $u & 0xff;
+			$u >>= 8;
+		}
+		$u += $hr[16];
+		$this->h[16] = $u & 3;
+		$u >>= 2;
+		$u += ($u << 2);		# $u *= 5;
+		for ($i=0; $i<16; $i++) {
+			$u += $this->h[$i];
+			$this->h[$i] = $u & 0xff;
+			$u >>= 8;
+		}
+		$this->h[16] = ($this->h[16] + $u) & 0xff;
+	}
+	function	freeze() {
+	/* compute h + -p */
+		$horig = $this->h;
+		$this->add(array(5, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0xfc));
+		
+	/* select h if h < p, or h + -p if h >= p */
+		$negative = (-($this->h[16] >> 7)) & 0xff;
+		for ($i=0; $i<17; $i++)
+			$this->h[$i] ^= $negative & ($horig[$i] ^ $this->h[$i]);
+	}
+	function	blocks($m, $size) {
+		$hibit = $this->final ^ 1;		# 1 << 128
+		$pos = 0;
+		while ($pos + 16 <= $size) {
+		/* h += m */
+			$c = array();
+			for ($i=0; $i<16; $i++)
+				$c[$i] = $m[$pos++];
+			$c[16] = $hibit;
+			$this->add($c);
+		/* h *= r */
+			$hr = array();
+			for ($i=0; $i<17; $i++) {
+				$u = 0;
+				for ($j=0; $j<=$i; $j++)
+					$u += $this->h[$j] * $this->r[$i - $j];
+				for ($j=$i+1; $j<17; $j++) {
+					$v = $this->h[$j] * $this->r[$i + 17 - $j];
+					$v = (($v << 8) + ($v << 6));		# v *= (5 << 6);
+					$u += $v;
+				}
+				$hr[$i] = $u;
+			}
+		/* (partial) h %= p */
+			$this->squeeze($hr);
+		}
+	}
+	function	finish() {
+	/* process the remaining block */
+		if (($this->leftover)) {
+			$i = $this->leftover;
+			$this->buffer[$i++] = 1;
+			while ($i < 16)
+				$this->buffer[$i++] = 0;
+			$this->final = 1;
+			$this->blocks($this->buffer, 16);
+		}
+		
+	/* fully reduce h */
+		$this->freeze();
+		
+	/* h = (h + pad) % (1 << 128) */
+		$this->add($this->pad);
+		$mac = array();
+		for ($i=0; $i<16; $i++)
+			$mac[$i] = $this->h[$i];
+		
+	/* zero out the state */
+		for ($i=0; $i<17; $i++)
+			$this->h[$i] = 0;
+		for ($i=0; $i<17; $i++)
+			$this->r[$i] = 0;
+		for ($i=0; $i<17; $i++)
+			$this->pad[$i] = 0;
+		
+		return $mac;
+	}
+	function	update($m) {
+		if (($this->leftover)) {
+			$want = min(count($m), 16 - $this->leftover);
+			for ($i=0; $i<$want; $i++)
+				$this->buffer[$this->leftover + $i] = array_shift($m);
+			$this->leftover += $want;
+			if ($this->leftover < 16)
+				return;
+			$this->blocks($this->buffer, 16);
+			$this->leftover = 0;
+		}
+	/* fully reduce h */
+		$pos = 0;
+		if (count($m) >= 16) {
+			$want = count($m) & 0xfffffff0;
+			$this->blocks($m, $want);
+			$pos += $want;
+		}
+		while ($pos < count($m)) {
+			$this->buffer[$this->leftover++] = $m[$pos++];
+		}
+	}
+}
+
+
+class	chacha20 {
+	var	$x;
+	function	__construct() {
+		$this->x = array();
+	}
+	function	rotl($a, $b) {
+		return (($a << $b) & 0xffffffff) | ($a >> (32 - $b));
+	}
+	function	qr($a, $b, $c, $d) {
+		$this->x[$a] = ($this->x[$a] + $this->x[$b]) & 0xffffffff;
+		$this->x[$d] ^= $this->x[$a];
+		$this->x[$d] = $this->rotl($this->x[$d], 16);
+		
+		$this->x[$c] = ($this->x[$c] + $this->x[$d]) & 0xffffffff;
+		$this->x[$b] ^= $this->x[$c];
+		$this->x[$b] = $this->rotl($this->x[$b], 12);
+		
+		$this->x[$a] = ($this->x[$a] + $this->x[$b]) & 0xffffffff;
+		$this->x[$d] ^= $this->x[$a];
+		$this->x[$d] = $this->rotl($this->x[$d], 8);
+		
+		$this->x[$c] = ($this->x[$c] + $this->x[$d]) & 0xffffffff;
+		$this->x[$b] ^= $this->x[$c];
+		$this->x[$b] = $this->rotl($this->x[$b], 7);
+	}
+	function	block($key, $counter, $nonce) {
+		$wpos = 0;
+		$this->x[$wpos++] = 0x61707865;
+		$this->x[$wpos++] = 0x3320646e;
+		$this->x[$wpos++] = 0x79622d32;
+		$this->x[$wpos++] = 0x6b206574;
+		$rpos = 0;
+		for ($i=0; $i<8; $i++) {
+			$v = $key[$rpos++];
+			$v |= $key[$rpos++] << 8;
+			$v |= $key[$rpos++] << 16;
+			$v |= $key[$rpos++] << 24;
+			$this->x[$wpos++] = $v;
+		}
+		$rpos = 0;
+		for ($i=0; $i<1; $i++) {
+			$v = $counter[$rpos++];
+			$v |= $counter[$rpos++] << 8;
+			$v |= $counter[$rpos++] << 16;
+			$v |= $counter[$rpos++] << 24;
+			$this->x[$wpos++] = $v;
+		}
+		$rpos = 0;
+		for ($i=0; $i<3; $i++) {
+			$v = $nonce[$rpos++];
+			$v |= $nonce[$rpos++] << 8;
+			$v |= $nonce[$rpos++] << 16;
+			$v |= $nonce[$rpos++] << 24;
+			$this->x[$wpos++] = $v;
+		}
+		$in = $this->x;
+		for ($i=0; $i<20; $i+=2) {
+			$this->qr(0, 4, 8, 12);
+			$this->qr(1, 5, 9, 13);
+			$this->qr(2, 6, 10, 14);
+			$this->qr(3, 7, 11, 15);
+			
+			$this->qr(0, 5, 10, 15);
+			$this->qr(1, 6, 11, 12);
+			$this->qr(2, 7, 8, 13);
+			$this->qr(3, 4, 9, 14);
+		}
+		$ret = array();
+		for ($i=0; $i<16; $i++) {
+			$v = $this->x[$i] + $in[$i];
+			$ret[] = $v & 0xff;
+			$ret[] = ($v >> 8) & 0xff;
+			$ret[] = ($v >> 16) & 0xff;
+			$ret[] = ($v >> 24) & 0xff;
+		}
+		return $ret;
+	}
+	function	crypt($input, $key, $nonce) {
+		$ret = array();
+		for ($pos=0; $pos<count($input); $pos++) {
+			if (($pos & 0x3f) == 0) {
+				$i = ($pos >> 6) + 1;		# counter: 1-
+				$counter = array(
+					$i & 0xff, 
+					($i >> 8) & 0xff, 
+					($i >> 16) & 0xff, 
+					($i >> 24) & 0xff
+				);
+				$out = $this->block($key, $counter, $nonce);
+			}
+			$ret[] = $input[$pos] ^ $out[$pos & 0x3f];
+		}
+		return $ret;
+	}
+}
+
+
+function	c20p1305_mac($aad, $buf, $key, $nonce)
+{
+	$c = new chacha20();
+	$p = new poly1305($c->block($key, array(0, 0, 0, 0), $nonce));
+	
+	$p->update($aad);
+	$i = count($aad);
+	while (($i & 0xf)) {
+		$p->update(array(0));
+		$i++;
+	}
+	
+	$p->update($buf);
+	$i = count($buf);
+	while (($i & 0xf)) {
+		$p->update(array(0));
+		$i++;
+	}
+	
+	$p->update(array(
+		count($aad) & 0xff, 
+		(count($aad) >> 8) & 0xff, 
+		(count($aad) >> 16) & 0xff, 
+		(count($aad) >> 24) & 0xff, 
+		0, 0, 0, 0
+	));
+	
+	$p->update(array(
+		count($buf) & 0xff, 
+		(count($buf) >> 8) & 0xff, 
+		(count($buf) >> 16) & 0xff, 
+		(count($buf) >> 24) & 0xff, 
+		0, 0, 0, 0
+	));
+	return $p->finish();
+}
+
+
+function	die_dump($a, $b, $s)
+{
+	print $s;
+	print "a :";
+	for ($i=0; $i<count($a); $i++)
+		printf(" %02x", $a[$i]);
+	print "\nb :";
+	for ($i=0; $i<count($a); $i++)
+		printf(" %02x", $b[$i]);
+	print "\n";
+	die();
+}
+
+
+function	cmp_array($a, $b)
+{
+	if (count($a) != count($b))
+		die_dump($a, $b, "a[".count($a)."] b[".count($b)."]\n");
+	for ($i=0; $i<count($a); $i++)
+		if ($a[$i] != $b[$i])
+			die_dump($a, $b, "a[{$i}]=".$a[$i]." b[{$i}]=".$b[$i]."\n");
+	print "cmp_array: ok.\n";
+}
+
+
+
+
+/* test a few basic operations */
+if ((1)) {
+	/* example from nacl */
+	$nacl_key = array(
+		0xee,0xa6,0xa7,0x25,0x1c,0x1e,0x72,0x91,
+		0x6d,0x11,0xc2,0xcb,0x21,0x4d,0x3c,0x25,
+		0x25,0x39,0x12,0x1d,0x8e,0x23,0x4e,0x65,
+		0x2d,0x65,0x1f,0xa4,0xc8,0xcf,0xf8,0x80
+	);
+
+	$nacl_msg = array(
+		0x8e,0x99,0x3b,0x9f,0x48,0x68,0x12,0x73,
+		0xc2,0x96,0x50,0xba,0x32,0xfc,0x76,0xce,
+		0x48,0x33,0x2e,0xa7,0x16,0x4d,0x96,0xa4,
+		0x47,0x6f,0xb8,0xc5,0x31,0xa1,0x18,0x6a,
+		0xc0,0xdf,0xc1,0x7c,0x98,0xdc,0xe8,0x7b,
+		0x4d,0xa7,0xf0,0x11,0xec,0x48,0xc9,0x72,
+		0x71,0xd2,0xc2,0x0f,0x9b,0x92,0x8f,0xe2,
+		0x27,0x0d,0x6f,0xb8,0x63,0xd5,0x17,0x38,
+		0xb4,0x8e,0xee,0xe3,0x14,0xa7,0xcc,0x8a,
+		0xb9,0x32,0x16,0x45,0x48,0xe5,0x26,0xae,
+		0x90,0x22,0x43,0x68,0x51,0x7a,0xcf,0xea,
+		0xbd,0x6b,0xb3,0x73,0x2b,0xc0,0xe9,0xda,
+		0x99,0x83,0x2b,0x61,0xca,0x01,0xb6,0xde,
+		0x56,0x24,0x4a,0x9e,0x88,0xd5,0xf9,0xb3,
+		0x79,0x73,0xf6,0x22,0xa4,0x3d,0x14,0xa6,
+		0x59,0x9b,0x1f,0x65,0x4c,0xb4,0x5a,0x74,
+		0xe3,0x55,0xa5
+	);
+
+	$nacl_mac = array(
+		0xf3,0xff,0xc7,0x70,0x3f,0x94,0x00,0xe5,
+		0x2a,0x7d,0xfb,0x4b,0x3d,0x33,0x05,0xd9
+	);
+
+	/* generates a final value of (2^130 - 2) == 3 */
+	$wrap_key = array(
+		0x02,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+		0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+		0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+		0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+	);
+
+	$wrap_msg = array(
+		0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+		0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
+	);
+
+	$wrap_mac = array(
+		0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+		0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+	);
+
+	/*
+		mac of the macs of messages of length 0 to 256, where the key and messages
+		have all their values set to the length
+	*/
+	$total_key = array(
+		0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+		0xff,0xfe,0xfd,0xfc,0xfb,0xfa,0xf9,
+		0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+		0xff,0xff,0xff,0xff,0xff,0xff,0xff, 0, 0, 0, 0
+	);
+
+	$total_mac = array(
+		0x64,0xaf,0xe2,0xe8,0xd6,0xad,0x7b,0xbd,
+		0xd2,0x87,0xf9,0x7c,0x44,0x62,0x3d,0x39
+	);
+
+	$p = new poly1305($nacl_key);
+	$p->update($nacl_msg);
+	cmp_array($nacl_mac, $p->finish());
+	
+	$p = new poly1305($nacl_key);
+	$p->update(array_slice($nacl_msg, 0, 32));
+	$p->update(array_slice($nacl_msg, 32, 64));
+	$p->update(array_slice($nacl_msg, 96, 16));
+	$p->update(array_slice($nacl_msg, 112, 8));
+	$p->update(array_slice($nacl_msg, 120, 4));
+	$p->update(array_slice($nacl_msg, 124, 2));
+	$p->update(array_slice($nacl_msg, 126, 1));
+	$p->update(array_slice($nacl_msg, 127, 1));
+	$p->update(array_slice($nacl_msg, 128, 1));
+	$p->update(array_slice($nacl_msg, 129, 1));
+	$p->update(array_slice($nacl_msg, 130, 1));
+	cmp_array($nacl_mac, $p->finish());
+	
+	$p = new poly1305($wrap_key);
+	$p->update($wrap_msg);
+	cmp_array($wrap_mac, $p->finish());
+	
+	$p = new poly1305($total_key);
+	for ($i=0; $i<256; $i++) {
+		$key = array();
+		for ($j=0; $j<32; $j++)
+			$key[] = $i;
+		$msg = array();
+		for ($j=0; $j<$i; $j++)
+			$msg[] = $i;
+		$q = new poly1305($key);
+		$q->update($msg);
+		$p->update($q->finish());
+	}
+	cmp_array($total_mac, $p->finish());
+	
+	$key = array();
+	for ($i=0; $i<32; $i++)
+		$key[] = $i + 221;
+	$msg = array();
+	for ($i=0; $i<73; $i++)
+		$msg[$i] = $i + 121;
+	$p = new poly1305($key);
+	$p->update($msg);
+	cmp_array(array(0xdd,0xb9,0xda,0x7d,0xdd,0x5e,0x52,0x79,0x27,0x30,0xed,0x5c,0xda,0x5f,0x90,0xa4), $p->finish());
+}
+
+
+if ((1)) {
+/* from https://github.com/wg/c20p1305 */
+	$plaintext = array(
+		0x4c, 0x61, 0x64, 0x69, 0x65, 0x73, 0x20, 0x61, 0x6e, 0x64, 0x20, 0x47, 0x65, 0x6e, 0x74, 0x6c,
+		0x65, 0x6d, 0x65, 0x6e, 0x20, 0x6f, 0x66, 0x20, 0x74, 0x68, 0x65, 0x20, 0x63, 0x6c, 0x61, 0x73,
+		0x73, 0x20, 0x6f, 0x66, 0x20, 0x27, 0x39, 0x39, 0x3a, 0x20, 0x49, 0x66, 0x20, 0x49, 0x20, 0x63,
+		0x6f, 0x75, 0x6c, 0x64, 0x20, 0x6f, 0x66, 0x66, 0x65, 0x72, 0x20, 0x79, 0x6f, 0x75, 0x20, 0x6f,
+		0x6e, 0x6c, 0x79, 0x20, 0x6f, 0x6e, 0x65, 0x20, 0x74, 0x69, 0x70, 0x20, 0x66, 0x6f, 0x72, 0x20,
+		0x74, 0x68, 0x65, 0x20, 0x66, 0x75, 0x74, 0x75, 0x72, 0x65, 0x2c, 0x20, 0x73, 0x75, 0x6e, 0x73,
+		0x63, 0x72, 0x65, 0x65, 0x6e, 0x20, 0x77, 0x6f, 0x75, 0x6c, 0x64, 0x20, 0x62, 0x65, 0x20, 0x69,
+		0x74, 0x2e
+	);
+	$aad = array(
+		0x50, 0x51, 0x52, 0x53, 0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7
+	);
+	$key = array(
+		0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
+		0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f
+	);
+	$nonce = array(
+		0x07, 0x00, 0x00, 0x00,
+		0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47
+	);
+	$ciphertext = array(
+		0xd3, 0x1a, 0x8d, 0x34, 0x64, 0x8e, 0x60, 0xdb, 0x7b, 0x86, 0xaf, 0xbc, 0x53, 0xef, 0x7e, 0xc2,
+		0xa4, 0xad, 0xed, 0x51, 0x29, 0x6e, 0x08, 0xfe, 0xa9, 0xe2, 0xb5, 0xa7, 0x36, 0xee, 0x62, 0xd6,
+		0x3d, 0xbe, 0xa4, 0x5e, 0x8c, 0xa9, 0x67, 0x12, 0x82, 0xfa, 0xfb, 0x69, 0xda, 0x92, 0x72, 0x8b,
+		0x1a, 0x71, 0xde, 0x0a, 0x9e, 0x06, 0x0b, 0x29, 0x05, 0xd6, 0xa5, 0xb6, 0x7e, 0xcd, 0x3b, 0x36,
+		0x92, 0xdd, 0xbd, 0x7f, 0x2d, 0x77, 0x8b, 0x8c, 0x98, 0x03, 0xae, 0xe3, 0x28, 0x09, 0x1b, 0x58,
+		0xfa, 0xb3, 0x24, 0xe4, 0xfa, 0xd6, 0x75, 0x94, 0x55, 0x85, 0x80, 0x8b, 0x48, 0x31, 0xd7, 0xbc,
+		0x3f, 0xf4, 0xde, 0xf0, 0x8e, 0x4b, 0x7a, 0x9d, 0xe5, 0x76, 0xd2, 0x65, 0x86, 0xce, 0xc6, 0x4b,
+		0x61, 0x16
+	);
+	$tag = array(
+		0x1a, 0xe1, 0x0b, 0x59, 0x4f, 0x09, 0xe2, 0x6a, 0x7e, 0x90, 0x2e, 0xcb, 0xd0, 0x60, 0x06, 0x91
+	);
+	
+	$c = new chacha20();
+	cmp_array($ciphertext, $work = $c->crypt($plaintext, $key, $nonce));
+	print "encrypt ok.\n";
+	
+	cmp_array($tag, c20p1305_mac($aad, $work, $key, $nonce));
+	print "tag ok.\n";
+}
+
+

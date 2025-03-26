@@ -393,3 +393,73 @@ static	void	c20p1305_mac(UB mac[16], const UB *aad, W aadsize, const UB *buf, W 
 }
 
 
+/* size=-1: init(send 12bytes) */
+/* size=0: flush(send 16bytes) */
+static	W	c20p1305_send(const UB *buf, W size, const UB key[32], const UB nonce[12], W (*sendfn)(W ub))
+{
+	static	struct	poly1305_state_internal_struct	state;
+	static	const	UB	zero16[16] = {0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0};
+	static	UB	out[64];
+	static	W	pos;
+	W	i, err;
+	
+	if (sendfn == NULL)
+		return -1;
+	if (size < 0) {
+		chacha20_block(out, key, zero16, nonce);
+		poly1305_init(&state, out);
+		pos = 0;
+		for (i=0; i<12; i++)
+			if ((err = sendfn(nonce[i])) < 0)
+				return err;
+		return 0;
+	}
+	if (size == 0) {
+		static	UB	len[8] = {0, 0, 0, 0,  0, 0, 0, 0};
+		static	UB	mac[16];
+		
+		if ((i = pos & 0xf))
+			poly1305_update(&state, zero16, 16 - i);
+		
+		len[0] = 0;
+		len[1] = 0;
+		len[2] = 0;
+		len[3] = 0;
+		poly1305_update(&state, len, 8);
+		
+		len[0] = pos & 0xff;
+		len[1] = (pos >> 8) & 0xff;
+		len[2] = (pos >> 16) & 0xff;
+		len[3] = (pos >> 24) & 0xff;
+		poly1305_update(&state, len, 8);
+		poly1305_finish(&state, mac);
+		
+		for (i=0; i<sizeof(mac); i++)
+			if ((err = sendfn(mac[i])) < 0)
+				return err;
+		return 0;
+	}
+	while (size > 0) {
+		static	UB	counter[4];
+		static	UB	c;
+		
+		if ((pos & 0x3f) == 0) {
+			i = (pos >> 6) + 1;
+			counter[0] = i & 0xff;
+			counter[1] = (i >> 8) & 0xff;
+			counter[2] = (i >> 16) & 0xff;
+			counter[3] = (i >> 24) & 0xff;
+			chacha20_block(out, key, counter, nonce);
+		}
+		c = out[pos & 0x3f] ^ *(buf++);
+		if ((err = sendfn(c)) < 0)
+			return err;
+		poly1305_update(&state, &c, 1);
+		size--;
+		pos++;
+	}
+	return 0;
+}
+
+
+
