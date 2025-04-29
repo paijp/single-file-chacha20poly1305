@@ -318,14 +318,21 @@ function	die_dump($a, $b, $s)
 }
 
 
-function	cmp_array($a, $b)
+function	cmp_array($a, $b, $log = 0)
 {
-	if (count($a) != count($b))
-		die_dump($a, $b, "a[".count($a)."] b[".count($b)."]\n");
+	if (count($a) != count($b)) {
+		if (($log))
+			die_dump($a, $b, "a[".count($a)."] b[".count($b)."]\n");
+		die();
+	}
 	for ($i=0; $i<count($a); $i++)
-		if ($a[$i] != $b[$i])
-			die_dump($a, $b, "a[{$i}]=".$a[$i]." b[{$i}]=".$b[$i]."\n");
-	print "cmp_array: ok.\n";
+		if ($a[$i] != $b[$i]) {
+			if (($log))
+				die_dump($a, $b, "a[{$i}]=".$a[$i]." b[{$i}]=".$b[$i]."\n");
+			die();
+		}
+	if (($log))
+		print "cmp_array: ok.\n";
 }
 
 
