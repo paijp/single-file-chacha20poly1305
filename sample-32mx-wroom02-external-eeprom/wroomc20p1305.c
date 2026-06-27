@@ -37,6 +37,16 @@ P19__TSS_SDA	RPB7
 #include	"c20p1305.h"
 #include	"i2c.h"
 
+#ifndef	WIFI_SSID
+#define	WIFI_SSID	"SSID"
+#endif
+#ifndef	WIFI_PASS
+#define	WIFI_PASS	"PASS"
+#endif
+#ifndef	WIFI_HOST
+#define	WIFI_HOST	"wifi.something.com"
+#endif
+
 
 static	UB	c20p1305key[32] = {0};
 static	UB	c20p1305nonce[12] = {0};
@@ -131,16 +141,11 @@ static	W	wroom4ub(W c)
 {
 	static	const	UB	*bin2hex = "0123456789abcdef";
 	
-#if 1
 	static	UB	s[3] = {'0', '0', 0};
-	
+
 	s[0] = bin2hex[(c >> 4) & 0xf];
 	s[1] = bin2hex[c & 0xf];
 	wroom4cmd(s, NULL, -1);
-#else
-	wroom4c(bin2hex[(c >> 4) & 0xf]);
-	wroom4c(bin2hex[c & 0xf]);
-#endif
 	return 1;
 }
 
@@ -300,22 +305,17 @@ int	main(int ac, char **av)
 		if (wroom4cmd("AT+CWMODE_CUR=1\r\n", "OK", 1000) < 0)
 			continue;
 		dly_tsk(50);
-#if 0
-		wroom4cmd("AT+CWSTARTSMART\r\n", "!a#s$d%f&g", 15000);
-		wroom4cmd("AT+CWSTOPSMART\r\n", "OK", 1000);
-		dly_tsk(100);
-#else
 		if (wroom4cmd("AT+CWDHCP_CUR=1,1\r\n", "OK", 1000) < 0)
 			continue;
 		dly_tsk(50);
-		if (wroom4cmd("AT+CWJAP_CUR=\"SSID\",\"PASS\"\r\n", "OK", 10000) < 0)
+		if (wroom4cmd("AT+CWJAP_CUR=\"" WIFI_SSID "\",\"" WIFI_PASS "\"\r\n", "OK", 10000) < 0)
 			continue;
 		dly_tsk(50);
 		break;
 	}
 	for (count0=0; count0<20; count0++) {
 		static	const	UB	req[] = "GET /wifi0/?id=0&key0c20=";
-		static	const	UB	req2[] = " HTTP/1.0\r\nHost:wifi.something.com\r\nConnection:close\r\n\r\n";
+		static	const	UB	req2[] = " HTTP/1.0\r\nHost:" WIFI_HOST "\r\nConnection:close\r\n\r\n";
 		static	const	UB	*bin2hex = "0123456789abcdef";
 		static	UB	buf[] = "AT+CIPSEND=0000\r\n";
 		static	UB	str[4];
@@ -337,7 +337,7 @@ int	main(int ac, char **av)
 		str[2] = bin2hex[((count0 / 10) % 10) & 0xf];
 		str[3] = bin2hex[(count0 % 10) & 0xf];
 		
-		wroom4cmd("AT+CIPSTART=\"TCP\",\"wifi.something.com\",80\r\n", "OK", -1);
+		wroom4cmd("AT+CIPSTART=\"TCP\",\"" WIFI_HOST "\",80\r\n", "OK", -1);
 		dly_tsk(50);
 		
 		l = 0;
@@ -424,7 +424,6 @@ int	main(int ac, char **av)
 			wroom4cmd("", "\nCLOSED", -1);
 		dly_tsk(2000);
 	}
-#endif
 	lcdtp_sendlogs("\ntest done.\n");
 	for (;;) {
 		UB	c;
