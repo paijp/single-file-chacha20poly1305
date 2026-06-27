@@ -157,58 +157,64 @@ static	W	wroom4ub(W c)
 }
 
 
-static	W	count4page(W page)
+#define	FLASHPAGEWORDS	(1024 / sizeof(UW))
+
+/*
+	Two pages so a power loss mid-update still leaves one valid copy:
+	always write the unselected page first, then the other. Each page
+	stores the counter in its first half with a bit-inverted copy in the
+	second half (see checkflashpage / writeflashpage).
+*/
+static	const	UW	flashpage0[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
+static	const	UW	flashpage1[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
+
+
+static	void	nvmunlock(UW cmd)
 {
-	W	v0, v1, v2, v3;
-	
-	i2cstop();
-	i2cstart();
-	if ((i2csend(0x50 * 2))) {
-		i2cstop();
-		return -1;
-	}
-	i2csend(page);
-	i2csend(0);
-	i2cstop();
-	
-	i2cstart();
-	i2csend(0x50 * 2 + 1);
-	v0 = i2crecv(0);
-	v1 = i2crecv(0);
-	v2 = i2crecv(0);
-	v3 = i2crecv(1);
-	i2cstop();
-	
-	if ((v0 ^ v2) != 0xff)
-		return -1;
-	if ((v1 ^ v3) != 0xff)
-		return -1;
-	return (v0 << 8) | v1;
+	NVMCON = cmd;
+	while ((NVMCONbits.LVDSTAT))
+		;
+	NVMKEY = 0xaa996655;
+	NVMKEY = 0x556699aa;
+	NVMCONSET = 0x8000;
+	while ((NVMCON & 0x8000))
+		;
+	NVMCONCLR = 0x4000;
+	dly_tsk(1);
 }
 
 
-static	W	writecount4page(W page, W v)
+static	void	writeflashpage(const volatile UW *mem, UW v)
 {
-	i2cstop();
-	i2cstart();
-	if ((i2csend(0x50 * 2))) {
-		i2cstop();
-		return -1;
+	W	i;
+
+	nvmunlock(0x4000);
+	dly_tsk(200);
+	nvmunlock(0x4000);
+
+	NVMADDR = ((UW)mem) & 0x1fffffff;
+	nvmunlock(0x4004);
+	for (i=0; i<FLASHPAGEWORDS / 2; i++) {
+		NVMADDR = ((UW)(mem + i)) & 0x1fffffff;
+		NVMDATA = (i == 0) ? v : 0;
+		nvmunlock(0x4001);
 	}
-	i2csend(page);
-	i2csend(0);
-	i2csend((v >> 8) & 0xff);
-	i2csend(v & 0xff);
-	i2csend(((v >> 8) & 0xff) ^ 0xff);
-	i2csend((v & 0xff) ^ 0xff);
-	i2cstop();
-	
-	do {
-		i2cstop();
-		i2cstart();
-	} while ((i2csend(0x50 * 2)));
-	i2cstop();
-	return 0;
+	for (i=0; i<FLASHPAGEWORDS / 2; i++) {
+		NVMADDR = ((UW)(mem + FLASHPAGEWORDS / 2 + i)) & 0x1fffffff;
+		NVMDATA = ((i == 0) ? v : 0) ^ 0xffffffff;
+		nvmunlock(0x4001);
+	}
+}
+
+
+static	W	checkflashpage(const volatile UW *mem)
+{
+	W	i;
+
+	for (i=0; i<FLASHPAGEWORDS / 2; i++)
+		if ((mem[i] ^ mem[i + FLASHPAGEWORDS / 2]) != 0xffffffff)
+			return -1;
+	return mem[0];
 }
 
 
@@ -286,18 +292,18 @@ int	main(int ac, char **av)
 	}
 	{
 		W	i;
-		
-		if ((i = count4page(0)) >= 0)
+
+		if ((i = checkflashpage(flashpage0)) >= 0)
 			c20p1305nvcounter = i;
 		lcdtp_sendloguw(i);
 		lcdtp_sendlogs(":page0\n");
-		if ((i = count4page(1)) >= 0)
+		if ((i = checkflashpage(flashpage1)) >= 0)
 			c20p1305nvcounter = i;
 		lcdtp_sendloguw(i);
 		lcdtp_sendlogs(":page1\n");
-		
-		writecount4page(0, c20p1305nvcounter + 1);
-		writecount4page(1, c20p1305nvcounter + 1);
+
+		writeflashpage(flashpage0, c20p1305nvcounter + 1);
+		writeflashpage(flashpage1, c20p1305nvcounter + 1);
 		lcdtp_sendloguw(c20p1305nvcounter);
 		lcdtp_sendlogs(":nvconuter\n");
 	}
