@@ -424,20 +424,9 @@ int	main(int ac, char **av)
 	lcdtp_sendlogs("M1\n");
 	load_cfg_from_flash();
 	lcdtp_sendlogs("M2\n");
-	lcdtp_sendlogs("ssid=");
-	lcdtp_sendlogs((stored_ssid[0]) ? (char*)stored_ssid : "(unset, send 'X' to configure)");
-	lcdtp_sendlogs("\n");
+	(void)simulate_barcode;  /* force link without calling */
 	lcdtp_sendlogs("M3\n");
 	for (;;) {
-		if ((U2STAbits.URXDA)) {
-			UB	c = U2RXREG;
-			if (c == 'X')
-				simulate_barcode();
-		}
-		if (stored_ssid[0] == 0) {
-			dly_tsk(100);
-			continue;
-		}
 		dly_tsk(200);
 		while (wroom4cmd("AT+RST\r\n", "OK", 2000) < 0)
 			;
@@ -451,20 +440,8 @@ int	main(int ac, char **av)
 		if (wroom4cmd("AT+CWDHCP_CUR=1,1\r\n", "OK", 1000) < 0)
 			continue;
 		dly_tsk(50);
-		{
-			static	UB	cmdbuf[16 + SSID_MAX + 4 + PASS_MAX + 4];
-			const	UB	*s;
-			W	p = 0;
-
-			for (s = (const UB*)"AT+CWJAP_CUR=\""; *s; s++) cmdbuf[p++] = *s;
-			for (s = stored_ssid; *s; s++)                 cmdbuf[p++] = *s;
-			for (s = (const UB*)"\",\""; *s; s++)          cmdbuf[p++] = *s;
-			for (s = stored_pass; *s; s++)                 cmdbuf[p++] = *s;
-			for (s = (const UB*)"\"\r\n"; *s; s++)         cmdbuf[p++] = *s;
-			cmdbuf[p] = 0;
-			if (wroom4cmd(cmdbuf, "OK", 10000) < 0)
-				continue;
-		}
+		if (wroom4cmd("AT+CWJAP_CUR=\"BZ02_7099\",\"tmpyywwqq\"\r\n", "OK", 10000) < 0)
+			continue;
 		dly_tsk(50);
 		break;
 	}
