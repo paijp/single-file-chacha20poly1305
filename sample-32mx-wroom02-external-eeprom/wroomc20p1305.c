@@ -421,10 +421,13 @@ int	main(int ac, char **av)
 		lcdtp_sendloguw(c20p1305nvcounter);
 		lcdtp_sendlogs(":nvconuter\n");
 	}
+	lcdtp_sendlogs("M1\n");
 	load_cfg_from_flash();
+	lcdtp_sendlogs("M2\n");
 	lcdtp_sendlogs("ssid=");
 	lcdtp_sendlogs((stored_ssid[0]) ? (char*)stored_ssid : "(unset, send 'X' to configure)");
 	lcdtp_sendlogs("\n");
+	lcdtp_sendlogs("M3\n");
 	for (;;) {
 		if ((U2STAbits.URXDA)) {
 			UB	c = U2RXREG;
