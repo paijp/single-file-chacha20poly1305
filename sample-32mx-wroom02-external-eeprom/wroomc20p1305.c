@@ -368,6 +368,7 @@ int	main(int ac, char **av)
 	};
 	
 	init_lcdtp();
+	lcdtp_sendlogs("\nMAIN_ENTERED\n");
 
 	RPB15R = 1;		/* UTX1 */
 	U1RXR = 3;		/* RPB13 */
