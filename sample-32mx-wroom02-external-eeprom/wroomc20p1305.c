@@ -357,6 +357,21 @@ int	main(int ac, char **av)
 		{NULL}
 	};
 	
+	{
+		/* very-early U2 marker: '@' before anything else. Clocks are stable
+		   by now (FRC+PLL locks before crt0 calls main). */
+		volatile	UW	dly;
+
+		RPB10R = 2;
+		U2BRG = 86;
+		U2MODE = 0x8008;
+		U2STA = 0x1400;
+		for (dly=0; dly<10000; dly++) ;
+		while ((U2STAbits.UTXBF))
+			;
+		U2TXREG = '@';
+		for (dly=0; dly<50000; dly++) ;
+	}
 	init_lcdtp();
 	
 	RPB15R = 1;		/* UTX1 */
