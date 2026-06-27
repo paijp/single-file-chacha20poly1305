@@ -313,19 +313,7 @@ static	void	parse_wifi_barcode(const UB *s)
 /* Simulated USB-HID barcode reader: pretend a Wi-Fi QR was scanned. */
 static	void	simulate_barcode(void)
 {
-	static	const	UB	demo[] = "WIFI:T:WPA;S:BZ02_7099;P:tmpyywwqq;;";
-
-	lcdtp_sendlogs("simulated barcode:\n");
-	lcdtp_sendlogs(demo);
-	lcdtp_sendlogs("\n");
-	parse_wifi_barcode(demo);
-	lcdtp_sendlogs("ssid=");
-	lcdtp_sendlogs(stored_ssid);
-	lcdtp_sendlogs("\npass=");
-	lcdtp_sendlogs(stored_pass);
-	lcdtp_sendlogs("\n");
-	save_cfg_to_flash();
-	lcdtp_sendlogs("saved.\n");
+	lcdtp_sendlogs("sim-stub\n");
 }
 
 
@@ -450,7 +438,7 @@ int	main(int ac, char **av)
 			if ((U2STAbits.URXDA)) {
 				UB	c = U2RXREG;
 				if (c == 'X')
-					lcdtp_sendlogs("Xseen\n");
+					simulate_barcode();
 			}
 			dly_tsk(100);
 			loops++;
