@@ -233,21 +233,27 @@ static	void	load_cfg_from_flash(void)
 	const	volatile	UW	*mem = NULL;
 	W	i;
 
+	lcdtp_sendlogs("LC1\n");
 	if (checkflashpage(cfgpage0) >= 0)
 		mem = cfgpage0;
-	else if (checkflashpage(cfgpage1) >= 0)
+	lcdtp_sendlogs("LC2\n");
+	if (mem == NULL && checkflashpage(cfgpage1) >= 0)
 		mem = cfgpage1;
+	lcdtp_sendlogs("LC3\n");
 	if (mem == NULL) {
 		stored_ssid[0] = 0;
 		stored_pass[0] = 0;
+		lcdtp_sendlogs("LC-nomem\n");
 		return;
 	}
+	lcdtp_sendlogs("LC4\n");
 	for (i=0; i<SSID_MAX / 4; i++)
 		stored_ssid_w[i] = mem[i];
 	stored_ssid[SSID_MAX] = 0;
 	for (i=0; i<PASS_MAX / 4; i++)
 		stored_pass_w[i] = mem[SSID_MAX / 4 + i];
 	stored_pass[PASS_MAX] = 0;
+	lcdtp_sendlogs("LC5\n");
 }
 
 
