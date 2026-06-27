@@ -424,17 +424,15 @@ int	main(int ac, char **av)
 		lcdtp_sendloguw(c20p1305nvcounter);
 		lcdtp_sendlogs(":nvconuter\n");
 	}
-	lcdtp_sendlogs("M1\n");
 	load_cfg_from_flash();
-	lcdtp_sendlogs("M2\n");
-	(void)simulate_barcode;  /* force link without calling */
-	lcdtp_sendlogs("ssid=[");
-	lcdtp_sendlogs((char*)stored_ssid);
-	lcdtp_sendlogs("]\n");
-	lcdtp_sendlogs("M3\n");
+	if (stored_ssid[0])
+		lcdtp_sendlogs("loaded ssid\n");
+	else
+		lcdtp_sendlogs("no ssid in flash; send 'X' on /dev/ttyACM0 to simulate barcode scan\n");
+	(void)simulate_barcode;  /* keep linked for the 'X' handler below */
 	{
 		W	loops = 0;
-		while (stored_ssid[0] == 0 && loops < 30) {
+		while (loops < 30) {
 			if ((U2STAbits.URXDA)) {
 				UB	c = U2RXREG;
 				if (c == 'X')
