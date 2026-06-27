@@ -1,7 +1,7 @@
 
 /*
 	Single file chacha20poly1305 https://github.com/paijp/single-file-chacha20poly1305
-	
+
 	License: MIT or PUBLIC DOMAIN.
 */
 
@@ -32,23 +32,36 @@ P19__TSS_SDA	RPB7
 
 
 #include	<xc.h>
-#include	"tplib.h"
 
 #include	"c20p1305.h"
 #include	"i2c.h"
 
+#pragma config  PMDL1WAY=OFF, IOL1WAY=OFF, FUSBIDIO=OFF, FVBUSONIO=OFF
+#pragma config  FPLLIDIV=DIV_1, FPLLMUL=MUL_20, UPLLIDIV=DIV_1, UPLLEN=OFF
+#pragma	config	FPLLODIV=DIV_2, FNOSC=FRCPLL, FSOSCEN=OFF, IESO=OFF
+#pragma	config	POSCMOD=XT, OSCIOFNC=OFF, FPBDIV=DIV_1, FCKSM=CSECMD
+#pragma	config	WDTPS=PS16384, WINDIS=OFF, FWDTEN=OFF, FWDTWINSZ=WINSZ_50
+#pragma	config	DEBUG=OFF, JTAGEN=OFF, ICESEL=ICS_PGx2, PWP=OFF
+#pragma	config	BWP=OFF, CP=OFF
+
+/*
+	WIFI_HOST is the only build-time secret left; SSID/PASS are configured at
+	runtime by scanning a Wi-Fi QR / barcode (currently simulated by sending 'X'
+	on /dev/ttyACM0). xc32-gcc strips quoted -D values, so we pass a bare token
+	and stringify here.
+*/
 #ifndef	WIFI_HOST
 #define	WIFI_HOST	wifi.something.com
 #endif
 #define	_STR(x)		#x
 #define	STR(x)		_STR(x)
 
+
+/* Runtime Wi-Fi credentials, loaded from flash at boot, set via barcode. */
 #define	SSID_MAX	32
 #define	PASS_MAX	64
-static	UW	stored_ssid_w[(SSID_MAX + 4) / 4] = {0};
-static	UW	stored_pass_w[(PASS_MAX + 4) / 4] = {0};
-#define	stored_ssid	((UB*)stored_ssid_w)
-#define	stored_pass	((UB*)stored_pass_w)
+static	UB	stored_ssid[SSID_MAX + 1] = {0};
+static	UB	stored_pass[PASS_MAX + 1] = {0};
 
 
 static	UB	c20p1305key[32] = {0};
@@ -57,10 +70,115 @@ static	UW	c20p1305nvcounter = 0;
 static	UW	c20p1305vcounter = 0;
 
 
+void	(*lcdtp_polltask)() = NULL;
+
+
+static	void	wait100us(void)
+{
+	long	l;
+
+	if ((lcdtp_polltask))
+		lcdtp_polltask();
+
+	for (l=1500; l>0; l--)
+		asm("nop");
+}
+
+
+void	dly_tsk(W ms)
+{
+	ms *= 10;
+	while (ms-- > 0)
+		wait100us();
+}
+
+
+void	lcdtp_sendlogc(W c)
+{
+	static	W	first = 1;
+
+	if ((first)) {
+		first = 0;
+
+		RPB10R = 2;		/* UTX2 */
+		U2MODE = 0;
+		U2BRG = 86;		/* 115.4kbps */
+		U2MODE = 0x8008;	/* enable N81 4(U2BRG + 1) */
+		U2STA = 0x1400;
+	}
+	for (;;) {
+		if (U2STAbits.UTXBF == 0) {
+			U2TXREG = c;
+			return;
+		}
+		if ((lcdtp_polltask))
+			lcdtp_polltask();
+	}
+}
+
+
+void	lcdtp_sendlogs(const char *s)
+{
+	W	c;
+
+	while ((c = *(s++)))
+		lcdtp_sendlogc(c);
+}
+
+
+void	lcdtp_sendlogdec(W v)
+{
+	if ((v < 0)) {
+		v = -v;
+		lcdtp_sendlogc('-');
+	}
+	if (v >= 10)
+		lcdtp_sendlogdec(v / 10);
+	lcdtp_sendlogc('0' + (v % 10));
+}
+
+
+void	lcdtp_sendlogun(UW v)
+{
+	static	const	char *bin2hex = "0123456789abcdef";
+
+	lcdtp_sendlogc(bin2hex[v & 0xf]);
+}
+
+
+void	lcdtp_sendlogub(UW v)
+{
+	lcdtp_sendlogun(v >> 4);
+	lcdtp_sendlogun(v);
+}
+
+
+void	lcdtp_sendloguh(UW v)
+{
+	lcdtp_sendlogun(v >> 12);
+	lcdtp_sendlogun(v >> 8);
+	lcdtp_sendlogun(v >> 4);
+	lcdtp_sendlogun(v);
+}
+
+
+void	lcdtp_sendloguw(UW v)
+{
+	lcdtp_sendlogun(v >> 28);
+	lcdtp_sendlogun(v >> 24);
+	lcdtp_sendlogun(v >> 20);
+	lcdtp_sendlogun(v >> 16);
+	lcdtp_sendlogun(v >> 12);
+	lcdtp_sendlogun(v >> 8);
+	lcdtp_sendlogun(v >> 4);
+	lcdtp_sendlogun(v);
+}
+
+
 static	W	c4wroom(W tmout)
 {
 	W	c;
-	
+
 	if (tmout > 0) {
 		TMR2 = 0;
 		IFS0bits.T2IF = 0;
@@ -96,20 +214,20 @@ static	W	wroom4cmd(const UB *send, const UB *recv, W tmout)
 {
 	W	c;
 	const	UB	*p;
-	
+
 	lcdtp_sendlogs("\nwroom<");
 	lcdtp_sendlogs(send);
-	
+
 	while ((U1STAbits.URXDA)) {
 		if ((U1STAbits.OERR))
 			U1STA = 0x1400;
 		c = U1RXREG;
 	}
-	
+
 	p = send;
 	while ((c = *(p++)))
 		wroom4c(c);
-	
+
 	if (recv == NULL)
 		return 0;
 	lcdtp_sendlogs("wroom>");
@@ -143,7 +261,7 @@ static	W	wroom4cmd(const UB *send, const UB *recv, W tmout)
 static	W	wroom4ub(W c)
 {
 	static	const	UB	*bin2hex = "0123456789abcdef";
-	
+
 	static	UB	s[3] = {'0', '0', 0};
 
 	s[0] = bin2hex[(c >> 4) & 0xf];
@@ -163,6 +281,8 @@ static	W	wroom4ub(W c)
 */
 static	const	UW	flashpage0[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
 static	const	UW	flashpage1[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
+
+/* Two more pages for Wi-Fi credentials, same redundancy scheme. */
 static	const	UW	cfgpage0[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
 static	const	UW	cfgpage1[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
 
@@ -243,10 +363,10 @@ static	void	load_cfg_from_flash(void)
 		return;
 	}
 	for (i=0; i<SSID_MAX / 4; i++)
-		stored_ssid_w[i] = mem[i];
+		((UW*)stored_ssid)[i] = mem[i];
 	stored_ssid[SSID_MAX] = 0;
 	for (i=0; i<PASS_MAX / 4; i++)
-		stored_pass_w[i] = mem[SSID_MAX / 4 + i];
+		((UW*)stored_pass)[i] = mem[SSID_MAX / 4 + i];
 	stored_pass[PASS_MAX] = 0;
 }
 
@@ -268,8 +388,10 @@ static	void	save_cfg_to_flash(void)
 }
 
 
-/* Parse "WIFI:T:<auth>;S:<ssid>;P:<password>;[H:...];" into stored_ssid/pass.
-   Backslash escapes the next char so passwords with ';' or ':' work. */
+/* Parse a Wi-Fi QR/barcode string in the form
+	WIFI:T:<auth>;S:<ssid>;P:<password>;[H:<true|false>;];
+   Extracts S: and P: into stored_ssid / stored_pass. Unknown tokens skipped.
+   '\\' before ';' or ':' or '\\' lets the literal char through. */
 static	void	parse_wifi_barcode(const UB *s)
 {
 	const	UB	*p = s;
@@ -310,7 +432,7 @@ static	void	parse_wifi_barcode(const UB *s)
 }
 
 
-/* Simulated USB-HID barcode reader: pretend a Wi-Fi QR was scanned. */
+/* Simulated USB-HID barcode reader: invoke as if a Wi-Fi QR was scanned. */
 static	void	simulate_barcode(void)
 {
 	static	const	UB	demo[] = "WIFI:T:WPA;S:BZ02_7099;P:tmpyywwqq;;";
@@ -331,49 +453,28 @@ static	void	simulate_barcode(void)
 
 int	main(int ac, char **av)
 {
-	static	W	count0 = 0;
-	static	W	val0 = 0;
-	static	W	val1 = 0;
-	static	W	group = 0;
-	static	W	groupa = 0;
-	static	W	volume0 = 0;
-	static	struct	tplib_parts_struct	parts[] = {
-		{tplib_parts_fill, 0, 0, LCD_W, LCD_H, 0x0000, NULL, NULL, NULL, 0}, 
-		{tplib_parts_log, 0, 0, LCD_W, LCD_H, 0, (char*)__func__, NULL, TPLIB_CONST2STR(SHA1SUM), 0}, 
-		{tplib_parts_dec, 16, 16, 112, 24, 0, &val0, NULL, "val0:", 0}, 
-		{tplib_parts_button, TPLIB_REL + 32, TPLIB_REL, 64, 32, 0, &val0, tplib_proc_tenkey, "set", 0}, 
-		{tplib_parts_dec, 16, TPLIB_REL + 48, 112, 24, 0, &val1, NULL, "val1:", 0}, 
-		{tplib_parts_button, TPLIB_REL + 32, TPLIB_REL, 64, 32, 0, &val1, tplib_proc_tenkey, "set", 0}, 
-		{tplib_parts_buttonalt, 16, TPLIB_REL + 48, 64, 32, 0, NULL, NULL, "alt0", 0}, 
-		{tplib_parts_buttonalt, TPLIB_REL + 80, TPLIB_REL, 64, 32, 1, NULL, NULL, "alt1", 0}, 
-		{tplib_parts_buttongroup, 16, TPLIB_REL + 48, 64, 32, 0, &group, NULL, "group0", 0}, 
-		{tplib_parts_buttongroup, TPLIB_REL + 8, TPLIB_REL, 64, 32, 1, &group, NULL, "group1", 0}, 
-		{tplib_parts_buttongroup, TPLIB_REL + 8, TPLIB_REL, 64, 32, 2, &group, NULL, "group2", 0}, 
-		{tplib_parts_buttongroup, 16, TPLIB_REL + 48, 64, 32, 0, &groupa, tplib_alwaysselect, "group0a", 0}, 
-		{tplib_parts_buttongroup, TPLIB_REL + 8, TPLIB_REL, 64, 32, 1, &groupa, tplib_alwaysselect, "group1a", 0}, 
-		{tplib_parts_buttongroup, TPLIB_REL + 8, TPLIB_REL, 64, 32, 2, &groupa, tplib_alwaysselect, "group2a", 0}, 
-		{tplib_parts_dec, 16, TPLIB_REL + 48, 128, 24, 0, &volume0, NULL, "volume0:", 0}, 
-		{tplib_parts_sliderv, TPLIB_REL + 16, TPLIB_REL, 32, 48, 0, &volume0, tplib_proc_redraw, NULL, 0}, 
-		{NULL}
-	};
-	
-	{
-		/* very-early U2 marker: '@' before anything else. Clocks are stable
-		   by now (FRC+PLL locks before crt0 calls main). */
-		volatile	UW	dly;
+	W	count0;
 
-		RPB10R = 2;
-		U2BRG = 86;
-		U2MODE = 0x8008;
-		U2STA = 0x1400;
-		for (dly=0; dly<10000; dly++) ;
-		while ((U2STAbits.UTXBF))
-			;
-		U2TXREG = '@';
-		for (dly=0; dly<50000; dly++) ;
-	}
-	init_lcdtp();
-	
+	CNPUA = 0xffff;
+	CNPUB = 0xffff;
+
+	CNPDB = 0;
+	CNPDB = 0;
+
+	TRISA = 0x0000;		/* -------- ---O--OO */
+	TRISB = 0x0000;		/* OOO---OO O-OOOOOO */
+
+	ANSELA = 0;
+	ANSELB = 0;
+
+	PORTA = 0xffff;
+	PORTB = 0xffff;
+
+	SYSKEY = 0;
+	SYSKEY = 0xaa996655;
+	SYSKEY = 0x556699aa;
+	SYSKEY = 0;
+
 	RPB15R = 1;		/* UTX1 */
 	U1RXR = 3;		/* RPB13 */
 	TRISBbits.TRISB13 = 1;
@@ -383,21 +484,22 @@ int	main(int ac, char **av)
 	U1MODE = 0x8008;		/* enable N81 4(U2BRG + 1) */
 	U1STA = 0x1400;
 
-	U2RXR = 3;		/* RPB11 — listen on same line /dev/ttyACM0 uses */
+	/* U2RX on RPB11: the same line /dev/ttyACM0 talks to (the bootloader's ':'
+	   hex-write mode passes other bytes through to U2RX). U2 TX/baud are set
+	   up lazily on first lcdtp_sendlogc call. */
+	U2RXR = 3;		/* RPB11 */
 	TRISBbits.TRISB11 = 1;
 
 	T2CON = 0x0070;		/* 1/256 */
 	TMR2 = 0;
 	PR2 = 156;		/* 40M / 256 / 1000Hz */
 	T2CON = 0x8070;
-	
+
 	i2cstop();
-	
-	lcdtp_sendlogs("\nboot(" TPLIB_CONST2STR(SHA1SUM) ")\n");
-	
+
 	{
 		W	i;
-		
+
 		for (i=0; i<0x80; i++) {
 			if ((i & 7) == 0)
 				lcdtp_sendlogub(i);
@@ -408,7 +510,7 @@ int	main(int ac, char **av)
 				lcdtp_sendlogs(" R");
 			i2crecv(1);
 			i2cstop();
-			
+
 			i2cstart();
 			if ((i2csend(i * 2)))
 				lcdtp_sendlogs("-");
@@ -437,19 +539,19 @@ int	main(int ac, char **av)
 		lcdtp_sendlogs(":nvconuter\n");
 	}
 	load_cfg_from_flash();
-	if (stored_ssid[0])
-		lcdtp_sendlogs("loaded ssid\n");
-	else
-		lcdtp_sendlogs("no ssid in flash; send 'X' on /dev/ttyACM0 to simulate barcode scan\n");
-	while (stored_ssid[0] == 0) {
+	lcdtp_sendlogs("ssid=");
+	lcdtp_sendlogs((stored_ssid[0]) ? (char*)stored_ssid : "(unset, send 'X' to configure)");
+	lcdtp_sendlogs("\n");
+	for (;;) {
 		if ((U2STAbits.URXDA)) {
 			UB	c = U2RXREG;
 			if (c == 'X')
 				simulate_barcode();
 		}
-		dly_tsk(100);
-	}
-	for (;;) {
+		if (stored_ssid[0] == 0) {
+			dly_tsk(100);
+			continue;
+		}
 		dly_tsk(200);
 		while (wroom4cmd("AT+RST\r\n", "OK", 2000) < 0)
 			;
@@ -488,7 +590,7 @@ int	main(int ac, char **av)
 		static	UB	str[4];
 		UB	*p;
 		W	l, l2;
-		
+
 		c20p1305vcounter += 2;
 		c20p1305nonce[4] = c20p1305nvcounter >> 24;
 		c20p1305nonce[5] = c20p1305nvcounter >> 16;
@@ -498,15 +600,15 @@ int	main(int ac, char **av)
 		c20p1305nonce[9] = c20p1305vcounter >> 16;
 		c20p1305nonce[10] = c20p1305vcounter >> 8;
 		c20p1305nonce[11] = c20p1305vcounter;
-		
+
 		str[0] = bin2hex[0];
 		str[1] = bin2hex[0];
 		str[2] = bin2hex[((count0 / 10) % 10) & 0xf];
 		str[3] = bin2hex[(count0 % 10) & 0xf];
-		
+
 		wroom4cmd("AT+CIPSTART=\"TCP\",\"" STR(WIFI_HOST) "\",80\r\n", "OK", -1);
 		dly_tsk(50);
-		
+
 		l = 0;
 		while ((req[l]))
 			l++;
@@ -528,7 +630,7 @@ int	main(int ac, char **av)
 		*(p++) = 0xa;
 		*(p++) = 0;
 		wroom4cmd(buf, "OK", -1);
-		
+
 		wroom4cmd(req, NULL, -1);
 		c20p1305_send(NULL, -1, c20p1305key, c20p1305nonce, wroom4ub);
 		c20p1305_send(str, 4, c20p1305key, c20p1305nonce, wroom4ub);
@@ -538,9 +640,9 @@ int	main(int ac, char **av)
 			static	UB	recvbuf[256];
 			W	pos;
 			W	c, upper;
-			
+
 			c20p1305nonce[11] |= 1;
-			
+
 			wroom4cmd(req2, "key0c20=", -1);
 			pos = 0;
 			upper = -1;
@@ -566,7 +668,7 @@ int	main(int ac, char **av)
 			if (pos >= 12 + 16) {
 				static	UB	mac[16];
 				W	i;
-				
+
 				for (i=0; i<12; i++)
 					if (recvbuf[i] != c20p1305nonce[i]) {
 						lcdtp_sendlogs("nonce not match.\n");
@@ -581,7 +683,7 @@ int	main(int ac, char **av)
 				c20p1305_xor(recvbuf + 12, pos - 12 - 16, c20p1305key, c20p1305nonce);
 				for (i=12; i<pos-16; i++) {
 					static	UB	s[2] = {'0', 0};
-					
+
 					s[0] = recvbuf[i];
 					lcdtp_sendlogs(s);
 				}
@@ -594,7 +696,7 @@ int	main(int ac, char **av)
 	lcdtp_sendlogs("\ntest done.\n");
 	for (;;) {
 		UB	c;
-		
+
 		if ((U1STAbits.OERR))
 			U1STA = 0x1400;
 		if (U1STAbits.URXDA == 0)
@@ -602,13 +704,9 @@ int	main(int ac, char **av)
 		c = U1RXREG;
 		lcdtp_sendlogc(c);
 	}
-	
-	tplib_setupflip("smallest-touchpanel-ui");
-	for (;;) {
-		tplib_proc(parts, gettp());
-	}
-	
+
+	for (;;)
+		;
+
 	return 0;
 }
-
-
