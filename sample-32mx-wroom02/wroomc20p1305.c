@@ -313,7 +313,19 @@ static	void	parse_wifi_barcode(const UB *s)
 /* Simulated USB-HID barcode reader: pretend a Wi-Fi QR was scanned. */
 static	void	simulate_barcode(void)
 {
-	lcdtp_sendlogs("sim-stub\n");
+	static	const	UB	demo[] = "WIFI:T:WPA;S:BZ02_7099;P:tmpyywwqq;;";
+
+	lcdtp_sendlogs("simulated barcode:\n");
+	lcdtp_sendlogs(demo);
+	lcdtp_sendlogs("\n");
+	parse_wifi_barcode(demo);
+	lcdtp_sendlogs("ssid=");
+	lcdtp_sendlogs(stored_ssid);
+	lcdtp_sendlogs("\npass=");
+	lcdtp_sendlogs(stored_pass);
+	lcdtp_sendlogs("\n");
+	save_cfg_to_flash();
+	lcdtp_sendlogs("saved.\n");
 }
 
 
@@ -429,20 +441,14 @@ int	main(int ac, char **av)
 		lcdtp_sendlogs("loaded ssid\n");
 	else
 		lcdtp_sendlogs("no ssid in flash; send 'X' on /dev/ttyACM0 to simulate barcode scan\n");
-	(void)simulate_barcode;  /* keep linked for the 'X' handler below */
-	{
-		W	loops = 0;
-		while (loops < 30) {
-			if ((U2STAbits.URXDA)) {
-				UB	c = U2RXREG;
-				if (c == 'X')
-					simulate_barcode();
-			}
-			dly_tsk(100);
-			loops++;
+	while (stored_ssid[0] == 0) {
+		if ((U2STAbits.URXDA)) {
+			UB	c = U2RXREG;
+			if (c == 'X')
+				simulate_barcode();
 		}
+		dly_tsk(100);
 	}
-	lcdtp_sendlogs("M4\n");
 	for (;;) {
 		dly_tsk(200);
 		while (wroom4cmd("AT+RST\r\n", "OK", 2000) < 0)
@@ -457,8 +463,20 @@ int	main(int ac, char **av)
 		if (wroom4cmd("AT+CWDHCP_CUR=1,1\r\n", "OK", 1000) < 0)
 			continue;
 		dly_tsk(50);
-		if (wroom4cmd("AT+CWJAP_CUR=\"BZ02_7099\",\"tmpyywwqq\"\r\n", "OK", 10000) < 0)
-			continue;
+		{
+			static	UB	cmdbuf[16 + SSID_MAX + 4 + PASS_MAX + 4];
+			const	UB	*s;
+			W	p = 0;
+
+			for (s = (const UB*)"AT+CWJAP_CUR=\""; *s; s++) cmdbuf[p++] = *s;
+			for (s = stored_ssid; *s; s++)                 cmdbuf[p++] = *s;
+			for (s = (const UB*)"\",\""; *s; s++)          cmdbuf[p++] = *s;
+			for (s = stored_pass; *s; s++)                 cmdbuf[p++] = *s;
+			for (s = (const UB*)"\"\r\n"; *s; s++)         cmdbuf[p++] = *s;
+			cmdbuf[p] = 0;
+			if (wroom4cmd(cmdbuf, "OK", 10000) < 0)
+				continue;
+		}
 		dly_tsk(50);
 		break;
 	}
