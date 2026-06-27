@@ -1,9 +1,9 @@
 DEVICE	= 32MX270F256B
 XC32	= /opt/microchip/xc32/v1.42/bin
 
-SECRETS	= $(if $(WIFI_SSID),-DWIFI_SSID='"$(WIFI_SSID)"') \
-	  $(if $(WIFI_PASS),-DWIFI_PASS='"$(WIFI_PASS)"') \
-	  $(if $(WIFI_HOST),-DWIFI_HOST='"$(WIFI_HOST)"')
+SECRETS	= $(if $(WIFI_SSID),'-DWIFI_SSID="$(WIFI_SSID)"') \
+	  $(if $(WIFI_PASS),'-DWIFI_PASS="$(WIFI_PASS)"') \
+	  $(if $(WIFI_HOST),'-DWIFI_HOST="$(WIFI_HOST)"')
 
 help:
 	@awk '/#[#]/{sub(":[^#]*", "\t\t");print $$0;}' makefile
