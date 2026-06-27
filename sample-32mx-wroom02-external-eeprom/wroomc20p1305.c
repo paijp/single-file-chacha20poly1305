@@ -444,14 +444,17 @@ int	main(int ac, char **av)
 	lcdtp_sendlogs((char*)stored_ssid);
 	lcdtp_sendlogs("]\n");
 	lcdtp_sendlogs("M3\n");
-	/* Wait for 'X' then run the simulated barcode reader. */
-	while (stored_ssid[0] == 0) {
-		if ((U2STAbits.URXDA)) {
-			UB	c = U2RXREG;
-			if (c == 'X')
-				simulate_barcode();
+	{
+		W	loops = 0;
+		while (stored_ssid[0] == 0 && loops < 30) {
+			if ((U2STAbits.URXDA)) {
+				UB	c = U2RXREG;
+				if (c == 'X')
+					lcdtp_sendlogs("Xseen\n");
+			}
+			dly_tsk(100);
+			loops++;
 		}
-		dly_tsk(100);
 	}
 	lcdtp_sendlogs("M4\n");
 	for (;;) {
