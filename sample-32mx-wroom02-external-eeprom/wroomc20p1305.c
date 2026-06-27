@@ -421,6 +421,8 @@ int	main(int ac, char **av)
 		lcdtp_sendloguw(c20p1305nvcounter);
 		lcdtp_sendlogs(":nvconuter\n");
 	}
+	load_cfg_from_flash();
+	lcdtp_sendlogs("after-load-cfg\n");
 	for (;;) {
 		dly_tsk(200);
 		while (wroom4cmd("AT+RST\r\n", "OK", 2000) < 0)
