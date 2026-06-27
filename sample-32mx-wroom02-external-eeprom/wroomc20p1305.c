@@ -167,6 +167,8 @@ static	W	wroom4ub(W c)
 */
 static	const	UW	flashpage0[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
 static	const	UW	flashpage1[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
+static	const	UW	cfgpage0[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
+static	const	UW	cfgpage1[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
 
 
 static	void	nvmunlock(UW cmd)
