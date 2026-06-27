@@ -468,20 +468,8 @@ int	main(int ac, char **av)
 		if (wroom4cmd("AT+CWDHCP_CUR=1,1\r\n", "OK", 1000) < 0)
 			continue;
 		dly_tsk(50);
-		{
-			static	UB	cmdbuf[16 + SSID_MAX + 4 + PASS_MAX + 4];
-			const	UB	*s;
-			W	p = 0;
-
-			for (s = (const UB*)"AT+CWJAP_CUR=\""; *s; s++) cmdbuf[p++] = *s;
-			for (s = stored_ssid; *s; s++)                 cmdbuf[p++] = *s;
-			for (s = (const UB*)"\",\""; *s; s++)          cmdbuf[p++] = *s;
-			for (s = stored_pass; *s; s++)                 cmdbuf[p++] = *s;
-			for (s = (const UB*)"\"\r\n"; *s; s++)         cmdbuf[p++] = *s;
-			cmdbuf[p] = 0;
-			if (wroom4cmd(cmdbuf, "OK", 10000) < 0)
-				continue;
-		}
+		if (wroom4cmd("AT+CWJAP_CUR=\"BZ02_7099\",\"tmpyywwqq\"\r\n", "OK", 10000) < 0)
+			continue;
 		dly_tsk(50);
 		break;
 	}
