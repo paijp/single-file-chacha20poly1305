@@ -425,6 +425,9 @@ int	main(int ac, char **av)
 	load_cfg_from_flash();
 	lcdtp_sendlogs("M2\n");
 	(void)simulate_barcode;  /* force link without calling */
+	lcdtp_sendlogs("ssid=[");
+	lcdtp_sendlogs((char*)stored_ssid);
+	lcdtp_sendlogs("]\n");
 	lcdtp_sendlogs("M3\n");
 	for (;;) {
 		dly_tsk(200);
