@@ -1,7 +1,9 @@
 DEVICE	= 32MX270F256B
 XC32	= /opt/microchip/xc32/v1.42/bin
 
-SECRETS	= $(if $(WIFI_HOST),-DWIFI_HOST=$(WIFI_HOST))
+SECRETS	= $(if $(WIFI_SSID),-DWIFI_SSID=$(WIFI_SSID)) \
+	  $(if $(WIFI_PASS),-DWIFI_PASS=$(WIFI_PASS)) \
+	  $(if $(WIFI_HOST),-DWIFI_HOST=$(WIFI_HOST))
 
 CFLAGS	= -mprocessor=$(DEVICE) -ffreestanding -fno-hosted -nodefaultlibs -membedded-data -Wall -Wno-pointer-sign -O1 -I .
 LDFLAGS	= -mprocessor=$(DEVICE) -mno-float

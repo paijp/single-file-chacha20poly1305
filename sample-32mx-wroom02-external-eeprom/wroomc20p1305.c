@@ -38,23 +38,21 @@ P19__TSS_SDA	RPB7
 #include	"i2c.h"
 
 /*
-	WIFI_HOST is the only build-time secret left; SSID/PASS are configured at
-	runtime by scanning a Wi-Fi QR / barcode (currently simulated by sending 'X'
-	on /dev/ttyACM0). xc32-gcc strips quoted -D values, so we pass a bare token
-	and stringify here.
+	Wi-Fi credentials are injected at build time as bare tokens via -D, then
+	stringified here. xc32-gcc strips quoted -D values, so we cannot pass
+	quoted strings directly.
 */
+#ifndef	WIFI_SSID
+#define	WIFI_SSID	SSID
+#endif
+#ifndef	WIFI_PASS
+#define	WIFI_PASS	PASS
+#endif
 #ifndef	WIFI_HOST
 #define	WIFI_HOST	wifi.something.com
 #endif
 #define	_STR(x)		#x
 #define	STR(x)		_STR(x)
-
-
-/* Runtime Wi-Fi credentials, loaded from flash at boot, set via barcode. */
-#define	SSID_MAX	32
-#define	PASS_MAX	64
-static	UB	stored_ssid[SSID_MAX + 1] = {0};
-static	UB	stored_pass[PASS_MAX + 1] = {0};
 
 
 static	UB	c20p1305key[32] = {0};
@@ -170,10 +168,6 @@ static	W	wroom4ub(W c)
 static	const	UW	flashpage0[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
 static	const	UW	flashpage1[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
 
-/* Two more pages for Wi-Fi credentials, same redundancy scheme. */
-static	const	UW	cfgpage0[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
-static	const	UW	cfgpage1[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
-
 
 static	void	nvmunlock(UW cmd)
 {
@@ -190,7 +184,7 @@ static	void	nvmunlock(UW cmd)
 }
 
 
-static	void	writeflashpage_data(const volatile UW *mem, const UW *src)
+static	void	writeflashpage(const volatile UW *mem, UW v)
 {
 	W	i;
 
@@ -202,26 +196,14 @@ static	void	writeflashpage_data(const volatile UW *mem, const UW *src)
 	nvmunlock(0x4004);
 	for (i=0; i<FLASHPAGEWORDS / 2; i++) {
 		NVMADDR = ((UW)(mem + i)) & 0x1fffffff;
-		NVMDATA = src[i];
+		NVMDATA = (i == 0) ? v : 0;
 		nvmunlock(0x4001);
 	}
 	for (i=0; i<FLASHPAGEWORDS / 2; i++) {
 		NVMADDR = ((UW)(mem + FLASHPAGEWORDS / 2 + i)) & 0x1fffffff;
-		NVMDATA = src[i] ^ 0xffffffff;
+		NVMDATA = ((i == 0) ? v : 0) ^ 0xffffffff;
 		nvmunlock(0x4001);
 	}
-}
-
-
-static	void	writeflashpage(const volatile UW *mem, UW v)
-{
-	static	UW	buf[FLASHPAGEWORDS / 2];
-	W	i;
-
-	buf[0] = v;
-	for (i=1; i<FLASHPAGEWORDS / 2; i++)
-		buf[i] = 0;
-	writeflashpage_data(mem, buf);
 }
 
 
@@ -233,109 +215,6 @@ static	W	checkflashpage(const volatile UW *mem)
 		if ((mem[i] ^ mem[i + FLASHPAGEWORDS / 2]) != 0xffffffff)
 			return -1;
 	return mem[0];
-}
-
-
-static	void	load_cfg_from_flash(void)
-{
-	const	volatile	UW	*mem = NULL;
-	W	i;
-
-	if (checkflashpage(cfgpage0) >= 0)
-		mem = cfgpage0;
-	else if (checkflashpage(cfgpage1) >= 0)
-		mem = cfgpage1;
-	if (mem == NULL) {
-		stored_ssid[0] = 0;
-		stored_pass[0] = 0;
-		return;
-	}
-	for (i=0; i<SSID_MAX / 4; i++)
-		((UW*)stored_ssid)[i] = mem[i];
-	stored_ssid[SSID_MAX] = 0;
-	for (i=0; i<PASS_MAX / 4; i++)
-		((UW*)stored_pass)[i] = mem[SSID_MAX / 4 + i];
-	stored_pass[PASS_MAX] = 0;
-}
-
-
-static	void	save_cfg_to_flash(void)
-{
-	static	UW	buf[FLASHPAGEWORDS / 2];
-	UB	*bbuf = (UB*)buf;
-	W	i;
-
-	for (i=0; i<sizeof(buf); i++)
-		bbuf[i] = 0;
-	for (i=0; i<SSID_MAX && stored_ssid[i]; i++)
-		bbuf[i] = stored_ssid[i];
-	for (i=0; i<PASS_MAX && stored_pass[i]; i++)
-		bbuf[SSID_MAX + i] = stored_pass[i];
-	writeflashpage_data(cfgpage0, buf);
-	writeflashpage_data(cfgpage1, buf);
-}
-
-
-/* Parse a Wi-Fi QR/barcode string in the form
-	WIFI:T:<auth>;S:<ssid>;P:<password>;[H:<true|false>;];
-   Extracts S: and P: into stored_ssid / stored_pass. Unknown tokens skipped.
-   '\\' before ';' or ':' or '\\' lets the literal char through. */
-static	void	parse_wifi_barcode(const UB *s)
-{
-	const	UB	*p = s;
-	UB	tag;
-	UB	*out;
-	W	max, i;
-
-	if (p[0] != 'W' || p[1] != 'I' || p[2] != 'F' || p[3] != 'I' || p[4] != ':')
-		return;
-	p += 5;
-	stored_ssid[0] = 0;
-	stored_pass[0] = 0;
-	while (*p && *p != ';') {
-		tag = p[0];
-		if (p[1] != ':') {
-			while (*p && *p != ';') p++;
-			if (*p == ';') p++;
-			continue;
-		}
-		p += 2;
-		if (tag == 'S' || tag == 'P') {
-			out = (tag == 'S') ? stored_ssid : stored_pass;
-			max = (tag == 'S') ? SSID_MAX : PASS_MAX;
-			i = 0;
-			while (*p && *p != ';') {
-				if (*p == '\\' && p[1])
-					p++;
-				if (i < max)
-					out[i++] = *p;
-				p++;
-			}
-			out[i] = 0;
-		} else {
-			while (*p && *p != ';') p++;
-		}
-		if (*p == ';') p++;
-	}
-}
-
-
-/* Simulated USB-HID barcode reader: invoke as if a Wi-Fi QR was scanned. */
-static	void	simulate_barcode(void)
-{
-	static	const	UB	demo[] = "WIFI:T:WPA;S:BZ02_7099;P:tmpyywwqq;;";
-
-	lcdtp_sendlogs("simulated barcode:\n");
-	lcdtp_sendlogs(demo);
-	lcdtp_sendlogs("\n");
-	parse_wifi_barcode(demo);
-	lcdtp_sendlogs("ssid=");
-	lcdtp_sendlogs(stored_ssid);
-	lcdtp_sendlogs("\npass=");
-	lcdtp_sendlogs(stored_pass);
-	lcdtp_sendlogs("\n");
-	save_cfg_to_flash();
-	lcdtp_sendlogs("saved.\n");
 }
 
 
@@ -368,8 +247,7 @@ int	main(int ac, char **av)
 	};
 	
 	init_lcdtp();
-	lcdtp_sendlogs("\nMAIN_ENTERED\n");
-
+	
 	RPB15R = 1;		/* UTX1 */
 	U1RXR = 3;		/* RPB13 */
 	TRISBbits.TRISB13 = 1;
@@ -379,12 +257,9 @@ int	main(int ac, char **av)
 	U1MODE = 0x8008;		/* enable N81 4(U2BRG + 1) */
 	U1STA = 0x1400;
 
-	/* U2RX on RPB11: same line /dev/ttyACM0 talks to. init_lcdtp() forces
-	   TRISB=0x0000, so TRISB11 must be flipped back to input AFTER it runs.
-	   U2 TX/baud are set up lazily on first lcdtp_sendlogc call. */
-	U2RXR = 3;		/* RPB11 */
+	U2RXR = 3;		/* RPB11 — listen on same line /dev/ttyACM0 uses */
 	TRISBbits.TRISB11 = 1;
-	
+
 	T2CON = 0x0070;		/* 1/256 */
 	TMR2 = 0;
 	PR2 = 156;		/* 40M / 256 / 1000Hz */
@@ -435,20 +310,7 @@ int	main(int ac, char **av)
 		lcdtp_sendloguw(c20p1305nvcounter);
 		lcdtp_sendlogs(":nvconuter\n");
 	}
-	load_cfg_from_flash();
-	lcdtp_sendlogs("ssid=");
-	lcdtp_sendlogs((stored_ssid[0]) ? (char*)stored_ssid : "(unset, send 'X' to configure)");
-	lcdtp_sendlogs("\n");
 	for (;;) {
-		if ((U2STAbits.URXDA)) {
-			UB	c = U2RXREG;
-			if (c == 'X')
-				simulate_barcode();
-		}
-		if (stored_ssid[0] == 0) {
-			dly_tsk(100);
-			continue;
-		}
 		dly_tsk(200);
 		while (wroom4cmd("AT+RST\r\n", "OK", 2000) < 0)
 			;
@@ -462,20 +324,8 @@ int	main(int ac, char **av)
 		if (wroom4cmd("AT+CWDHCP_CUR=1,1\r\n", "OK", 1000) < 0)
 			continue;
 		dly_tsk(50);
-		{
-			static	UB	cmdbuf[16 + SSID_MAX + 4 + PASS_MAX + 4];
-			const	UB	*s;
-			W	p = 0;
-
-			for (s = (const UB*)"AT+CWJAP_CUR=\""; *s; s++) cmdbuf[p++] = *s;
-			for (s = stored_ssid; *s; s++)                 cmdbuf[p++] = *s;
-			for (s = (const UB*)"\",\""; *s; s++)          cmdbuf[p++] = *s;
-			for (s = stored_pass; *s; s++)                 cmdbuf[p++] = *s;
-			for (s = (const UB*)"\"\r\n"; *s; s++)         cmdbuf[p++] = *s;
-			cmdbuf[p] = 0;
-			if (wroom4cmd(cmdbuf, "OK", 10000) < 0)
-				continue;
-		}
+		if (wroom4cmd("AT+CWJAP_CUR=\"" STR(WIFI_SSID) "\",\"" STR(WIFI_PASS) "\"\r\n", "OK", 10000) < 0)
+			continue;
 		dly_tsk(50);
 		break;
 	}
