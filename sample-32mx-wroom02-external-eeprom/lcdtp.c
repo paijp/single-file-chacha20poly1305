@@ -17,7 +17,7 @@
 #pragma	config	POSCMOD=XT, OSCIOFNC=OFF, FPBDIV=DIV_1, FCKSM=CSECMD
 #pragma	config	WDTPS=PS16384, WINDIS=OFF, FWDTEN=OFF, FWDTWINSZ=WINSZ_50
 #pragma	config	DEBUG=OFF, JTAGEN=OFF, ICESEL=ICS_PGx2, PWP=OFF
-#pragma	config	BWP=OFF, CP=ON
+#pragma	config	BWP=OFF, CP=OFF
 
 
 /*jp.pa-i/html
