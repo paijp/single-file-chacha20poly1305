@@ -367,8 +367,21 @@ int	main(int ac, char **av)
 		{NULL}
 	};
 	
+	/* Debug: U2 init + 'A' marker BEFORE init_lcdtp to confirm we reach main. */
+	RPB10R = 2;
+	U2MODE = 0;
+	U2BRG = 86;
+	U2MODE = 0x8008;
+	U2STA = 0x1400;
+	while (U2STAbits.UTXBF) ;
+	U2TXREG = 'A';
+	{ volatile W d; for (d=0; d<100000; d++) ; }
+
 	init_lcdtp();
-	
+
+	while (U2STAbits.UTXBF) ;
+	U2TXREG = 'B';
+
 	RPB15R = 1;		/* UTX1 */
 	U1RXR = 3;		/* RPB13 */
 	TRISBbits.TRISB13 = 1;
