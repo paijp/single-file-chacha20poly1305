@@ -45,26 +45,32 @@ P19__TSS_SDA	RPB7
 #pragma	config	BWP=OFF, CP=OFF
 
 /*
-	WIFI_HOST is the only build-time secret left; SSID/PASS are configured at
-	runtime by scanning a Wi-Fi QR / barcode (currently simulated by sending 'X'
-	on /dev/ttyACM0). xc32-gcc strips quoted -D values, so we pass a bare token
-	and stringify here.
+	All credentials/endpoint are configured at runtime by scanning two
+	independent barcodes (simulated for now via 'X' and 'Y' on /dev/ttyACM0):
+	  WIFI:T:WPA;S:<ssid>;P:<password>;;
+	  C20P:K:<64-hex-key>;U:<full URL up to "key0c20=">;;
 */
-#ifndef	WIFI_HOST
-#define	WIFI_HOST	wifi.something.com
-#endif
-#define	_STR(x)		#x
-#define	STR(x)		_STR(x)
 
 
-/* Runtime Wi-Fi credentials, loaded from flash at boot, set via barcode. */
+/* Runtime Wi-Fi credentials, loaded from flash at boot, set via 'X' barcode. */
 #define	SSID_MAX	32
 #define	PASS_MAX	64
 static	UB	stored_ssid[SSID_MAX + 1] = {0};
 static	UB	stored_pass[PASS_MAX + 1] = {0};
 
+/* Runtime ChaCha20 key + endpoint URL, set via 'Y' barcode. */
+#define	URL_MAX		224
+static	UB	stored_key[32] = {0};
+static	UB	stored_url[URL_MAX + 1] = {0};
+static	UB	stored_host[64] = {0};
+static	const	UB	*stored_path = (const UB*)"";
 
-static	UB	c20p1305key[32] = {0};
+/* Built once after Wi-Fi associates, then sent each request iteration. */
+static	UB	req[8 + URL_MAX] = {0};
+static	UB	req2[64 + 64] = {0};
+static	UB	cipstart[24 + 64] = {0};
+
+
 static	UB	c20p1305nonce[12] = {0};
 static	UW	c20p1305nvcounter = 0;
 static	UW	c20p1305vcounter = 0;
@@ -282,9 +288,10 @@ static	W	wroom4ub(W c)
 static	const	UW	flashpage0[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
 static	const	UW	flashpage1[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
 
-/* Two more pages for Wi-Fi credentials, same redundancy scheme. */
-static	const	UW	cfgpage0[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
-static	const	UW	cfgpage1[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
+/* One page each for Wi-Fi and ChaCha20+URL: a barcode can be rescanned if a
+   write is interrupted, so no need for a redundant backup page. */
+static	const	UW	cfgpage_wifi[FLASHPAGEWORDS] __attribute__((aligned(1024))) = {0};
+static	const	UW	cfgpage_app[FLASHPAGEWORDS]  __attribute__((aligned(1024))) = {0};
 
 
 static	void	nvmunlock(UW cmd)
@@ -348,16 +355,12 @@ static	W	checkflashpage(const volatile UW *mem)
 }
 
 
-static	void	load_cfg_from_flash(void)
+static	void	load_wifi_from_flash(void)
 {
-	const	volatile	UW	*mem = NULL;
+	const	volatile	UW	*mem = cfgpage_wifi;
 	W	i;
 
-	if (checkflashpage(cfgpage0) >= 0)
-		mem = cfgpage0;
-	else if (checkflashpage(cfgpage1) >= 0)
-		mem = cfgpage1;
-	if (mem == NULL) {
+	if (checkflashpage(mem) < 0) {
 		stored_ssid[0] = 0;
 		stored_pass[0] = 0;
 		return;
@@ -371,7 +374,7 @@ static	void	load_cfg_from_flash(void)
 }
 
 
-static	void	save_cfg_to_flash(void)
+static	void	save_wifi_to_flash(void)
 {
 	static	UW	buf[FLASHPAGEWORDS / 2];
 	UB	*bbuf = (UB*)buf;
@@ -383,21 +386,108 @@ static	void	save_cfg_to_flash(void)
 		bbuf[i] = stored_ssid[i];
 	for (i=0; i<PASS_MAX && stored_pass[i]; i++)
 		bbuf[SSID_MAX + i] = stored_pass[i];
-	writeflashpage_data(cfgpage0, buf);
-	writeflashpage_data(cfgpage1, buf);
+	writeflashpage_data(cfgpage_wifi, buf);
 }
 
 
-/* Parse a Wi-Fi QR/barcode string in the form
-	WIFI:T:<auth>;S:<ssid>;P:<password>;[H:<true|false>;];
-   Extracts S: and P: into stored_ssid / stored_pass. Unknown tokens skipped.
-   '\\' before ';' or ':' or '\\' lets the literal char through. */
+/* Split stored_url (e.g. "http://host/path?...key0c20=") into stored_host
+   and stored_path. Tolerates missing scheme and missing path. */
+static	void	parse_stored_url(void)
+{
+	const	UB	*p = stored_url;
+	W	i;
+
+	stored_host[0] = 0;
+	stored_path = (const UB*)"";
+	if (p[0] == 'h' && p[1] == 't' && p[2] == 't' && p[3] == 'p') {
+		p += 4;
+		if (*p == 's') p++;
+		if (p[0] == ':' && p[1] == '/' && p[2] == '/') p += 3;
+	}
+	i = 0;
+	while (*p && *p != '/' && *p != ':' && i < (W)sizeof(stored_host) - 1)
+		stored_host[i++] = *p++;
+	stored_host[i] = 0;
+	while (*p && *p != '/')
+		p++;	/* skip optional :port */
+	stored_path = p;
+}
+
+
+static	void	load_app_from_flash(void)
+{
+	const	volatile	UW	*mem = cfgpage_app;
+	W	i;
+
+	if (checkflashpage(mem) < 0) {
+		stored_key[0] = 0;
+		stored_url[0] = 0;
+		parse_stored_url();
+		return;
+	}
+	for (i=0; i<8; i++)
+		((UW*)stored_key)[i] = mem[i];
+	for (i=0; i<URL_MAX / 4; i++)
+		((UW*)stored_url)[i] = mem[8 + i];
+	stored_url[URL_MAX] = 0;
+	parse_stored_url();
+}
+
+
+static	void	save_app_to_flash(void)
+{
+	static	UW	buf[FLASHPAGEWORDS / 2];
+	UB	*bbuf = (UB*)buf;
+	W	i;
+
+	for (i=0; i<sizeof(buf); i++)
+		bbuf[i] = 0;
+	for (i=0; i<32; i++)
+		bbuf[i] = stored_key[i];
+	for (i=0; i<URL_MAX && stored_url[i]; i++)
+		bbuf[32 + i] = stored_url[i];
+	writeflashpage_data(cfgpage_app, buf);
+}
+
+
+/* Hex digit -> nibble (0..15), or -1 on garbage. */
+static	W	hex2nib(W c)
+{
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return c - 'a' + 0xa;
+	if (c >= 'A' && c <= 'F') return c - 'A' + 0xa;
+	return -1;
+}
+
+
+/* Generic tag-prefixed field copier: advances *pp past the value (and its
+   trailing ';'). out may be NULL to skip. '\\' escapes the next char. */
+static	void	copy_field(const UB **pp, UB *out, W max)
+{
+	const	UB	*p = *pp;
+	W	i = 0;
+
+	while (*p && *p != ';') {
+		if (*p == '\\' && p[1])
+			p++;
+		if (out && i < max)
+			out[i++] = *p;
+		p++;
+	}
+	if (out)
+		out[i] = 0;
+	if (*p == ';')
+		p++;
+	*pp = p;
+}
+
+
+/* Parse "WIFI:T:<auth>;S:<ssid>;P:<password>;[H:<true|false>];" into
+   stored_ssid / stored_pass. Unknown tokens skipped. */
 static	void	parse_wifi_barcode(const UB *s)
 {
 	const	UB	*p = s;
 	UB	tag;
-	UB	*out;
-	W	max, i;
 
 	if (p[0] != 'W' || p[1] != 'I' || p[2] != 'F' || p[3] != 'I' || p[4] != ':')
 		return;
@@ -407,47 +497,99 @@ static	void	parse_wifi_barcode(const UB *s)
 	while (*p && *p != ';') {
 		tag = p[0];
 		if (p[1] != ':') {
-			while (*p && *p != ';') p++;
-			if (*p == ';') p++;
+			copy_field(&p, NULL, 0);
 			continue;
 		}
 		p += 2;
-		if (tag == 'S' || tag == 'P') {
-			out = (tag == 'S') ? stored_ssid : stored_pass;
-			max = (tag == 'S') ? SSID_MAX : PASS_MAX;
-			i = 0;
-			while (*p && *p != ';') {
-				if (*p == '\\' && p[1])
-					p++;
-				if (i < max)
-					out[i++] = *p;
-				p++;
-			}
-			out[i] = 0;
-		} else {
-			while (*p && *p != ';') p++;
+		switch (tag) {
+		case 'S':	copy_field(&p, stored_ssid, SSID_MAX);	break;
+		case 'P':	copy_field(&p, stored_pass, PASS_MAX);	break;
+		default:	copy_field(&p, NULL, 0);		break;
 		}
-		if (*p == ';') p++;
 	}
 }
 
 
-/* Simulated USB-HID barcode reader: invoke as if a Wi-Fi QR was scanned. */
-static	void	simulate_barcode(void)
+/* Parse "C20P:K:<64-hex chars>;U:<url>;;" into stored_key / stored_url.
+   K: must be exactly 64 hex chars (32 bytes); malformed → key cleared. */
+static	void	parse_c20p_barcode(const UB *s)
+{
+	const	UB	*p = s;
+	UB	tag;
+	W	i, hi, lo;
+
+	if (p[0] != 'C' || p[1] != '2' || p[2] != '0' || p[3] != 'P' || p[4] != ':')
+		return;
+	p += 5;
+	for (i=0; i<32; i++) stored_key[i] = 0;
+	stored_url[0] = 0;
+	while (*p && *p != ';') {
+		tag = p[0];
+		if (p[1] != ':') {
+			copy_field(&p, NULL, 0);
+			continue;
+		}
+		p += 2;
+		switch (tag) {
+		case 'K':
+			for (i=0; i<32; i++) {
+				if ((hi = hex2nib(*p)) < 0) break;
+				p++;
+				if ((lo = hex2nib(*p)) < 0) break;
+				p++;
+				stored_key[i] = (hi << 4) | lo;
+			}
+			copy_field(&p, NULL, 0);	/* skip rest until ';' */
+			break;
+		case 'U':
+			copy_field(&p, stored_url, URL_MAX);
+			break;
+		default:
+			copy_field(&p, NULL, 0);
+			break;
+		}
+	}
+	parse_stored_url();
+}
+
+
+/* Simulated USB-HID barcode reader: 'X' = Wi-Fi QR, 'Y' = C20P URL/key QR. */
+static	void	simulate_wifi_barcode(void)
 {
 	static	const	UB	demo[] = "WIFI:T:WPA;S:BZ02_7099;P:tmpyywwqq;;";
 
-	lcdtp_sendlogs("simulated barcode:\n");
+	lcdtp_sendlogs("simulated wifi barcode:\n");
 	lcdtp_sendlogs(demo);
 	lcdtp_sendlogs("\n");
 	parse_wifi_barcode(demo);
 	lcdtp_sendlogs("ssid=");
 	lcdtp_sendlogs(stored_ssid);
-	lcdtp_sendlogs("\npass=");
-	lcdtp_sendlogs(stored_pass);
 	lcdtp_sendlogs("\n");
-	save_cfg_to_flash();
-	lcdtp_sendlogs("saved.\n");
+	save_wifi_to_flash();
+	lcdtp_sendlogs("wifi saved.\n");
+}
+
+
+static	void	simulate_c20p_barcode(void)
+{
+	static	const	UB	demo[] =
+		"C20P:K:0000000011111111222222223333333344444444"
+		"555555556666666677777777"
+		";U:http://k-keiei.jp/wifi0/?id=0&key0c20=;;";
+
+	lcdtp_sendlogs("simulated c20p barcode:\n");
+	lcdtp_sendlogs(demo);
+	lcdtp_sendlogs("\n");
+	parse_c20p_barcode(demo);
+	lcdtp_sendlogs("url=");
+	lcdtp_sendlogs(stored_url);
+	lcdtp_sendlogs("\nhost=");
+	lcdtp_sendlogs(stored_host);
+	lcdtp_sendlogs("\npath=");
+	lcdtp_sendlogs(stored_path);
+	lcdtp_sendlogs("\n");
+	save_app_to_flash();
+	lcdtp_sendlogs("app saved.\n");
 }
 
 
@@ -538,17 +680,22 @@ int	main(int ac, char **av)
 		lcdtp_sendloguw(c20p1305nvcounter);
 		lcdtp_sendlogs(":nvconuter\n");
 	}
-	load_cfg_from_flash();
+	load_wifi_from_flash();
+	load_app_from_flash();
 	lcdtp_sendlogs("ssid=");
-	lcdtp_sendlogs((stored_ssid[0]) ? (char*)stored_ssid : "(unset, send 'X' to configure)");
+	lcdtp_sendlogs((stored_ssid[0]) ? (char*)stored_ssid : "(unset; send 'X')");
+	lcdtp_sendlogs("\nurl=");
+	lcdtp_sendlogs((stored_url[0])  ? (char*)stored_url  : "(unset; send 'Y')");
 	lcdtp_sendlogs("\n");
 	for (;;) {
 		if ((U2STAbits.URXDA)) {
 			UB	c = U2RXREG;
 			if (c == 'X')
-				simulate_barcode();
+				simulate_wifi_barcode();
+			else if (c == 'Y')
+				simulate_c20p_barcode();
 		}
-		if (stored_ssid[0] == 0) {
+		if (stored_ssid[0] == 0 || stored_url[0] == 0) {
 			dly_tsk(100);
 			continue;
 		}
@@ -582,9 +729,35 @@ int	main(int ac, char **av)
 		dly_tsk(50);
 		break;
 	}
+	{
+		W	i;
+		static	const	UB	pre[]  = " HTTP/1.0\r\nHost:";
+		static	const	UB	suf[]  = "\r\nConnection:close\r\n\r\n";
+		static	const	UB	cpre[] = "AT+CIPSTART=\"TCP\",\"";
+		static	const	UB	csuf[] = "\",80\r\n";
+		const	UB	*s;
+
+		/* "GET <path>" — hex payload appended at send time, then req2. */
+		i = 0;
+		req[i++] = 'G'; req[i++] = 'E'; req[i++] = 'T'; req[i++] = ' ';
+		for (s=stored_path; *s && i<(W)sizeof(req)-1; s++) req[i++] = *s;
+		req[i] = 0;
+
+		/* " HTTP/1.0\r\nHost:<host>\r\nConnection:close\r\n\r\n" */
+		i = 0;
+		for (s=pre; *s; s++) req2[i++] = *s;
+		for (s=stored_host; *s; s++) req2[i++] = *s;
+		for (s=suf; *s; s++) req2[i++] = *s;
+		req2[i] = 0;
+
+		/* AT+CIPSTART="TCP","<host>",80 */
+		i = 0;
+		for (s=cpre; *s; s++) cipstart[i++] = *s;
+		for (s=stored_host; *s; s++) cipstart[i++] = *s;
+		for (s=csuf; *s; s++) cipstart[i++] = *s;
+		cipstart[i] = 0;
+	}
 	for (count0=0; count0<20; count0++) {
-		static	const	UB	req[] = "GET /wifi0/?id=0&key0c20=";
-		static	const	UB	req2[] = " HTTP/1.0\r\nHost:" STR(WIFI_HOST) "\r\nConnection:close\r\n\r\n";
 		static	const	UB	*bin2hex = "0123456789abcdef";
 		static	UB	buf[] = "AT+CIPSEND=0000\r\n";
 		static	UB	str[4];
@@ -606,7 +779,7 @@ int	main(int ac, char **av)
 		str[2] = bin2hex[((count0 / 10) % 10) & 0xf];
 		str[3] = bin2hex[(count0 % 10) & 0xf];
 
-		wroom4cmd("AT+CIPSTART=\"TCP\",\"" STR(WIFI_HOST) "\",80\r\n", "OK", -1);
+		wroom4cmd(cipstart, "OK", -1);
 		dly_tsk(50);
 
 		l = 0;
@@ -632,9 +805,9 @@ int	main(int ac, char **av)
 		wroom4cmd(buf, "OK", -1);
 
 		wroom4cmd(req, NULL, -1);
-		c20p1305_send(NULL, -1, c20p1305key, c20p1305nonce, wroom4ub);
-		c20p1305_send(str, 4, c20p1305key, c20p1305nonce, wroom4ub);
-		c20p1305_send(NULL, 0, c20p1305key, c20p1305nonce, wroom4ub);
+		c20p1305_send(NULL, -1, stored_key, c20p1305nonce, wroom4ub);
+		c20p1305_send(str, 4, stored_key, c20p1305nonce, wroom4ub);
+		c20p1305_send(NULL, 0, stored_key, c20p1305nonce, wroom4ub);
 		wroom4cmd(req2, NULL, -1);
 		if ((c20p1305nonce[11] & 1) == 0) {
 			static	UB	recvbuf[256];
@@ -674,13 +847,13 @@ int	main(int ac, char **av)
 						lcdtp_sendlogs("nonce not match.\n");
 						break;
 					}
-				c20p1305_mac(mac, NULL, 0, recvbuf + 12, pos - 12 - 16, c20p1305key, c20p1305nonce);
+				c20p1305_mac(mac, NULL, 0, recvbuf + 12, pos - 12 - 16, stored_key, c20p1305nonce);
 				for (i=0; i<sizeof(mac); i++)
 					if (recvbuf[pos - sizeof(mac) + i] != mac[i]) {
 						lcdtp_sendlogs("mac not match.\n");
 						break;
 					}
-				c20p1305_xor(recvbuf + 12, pos - 12 - 16, c20p1305key, c20p1305nonce);
+				c20p1305_xor(recvbuf + 12, pos - 12 - 16, stored_key, c20p1305nonce);
 				for (i=12; i<pos-16; i++) {
 					static	UB	s[2] = {'0', 0};
 
