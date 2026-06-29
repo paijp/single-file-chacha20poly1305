@@ -419,12 +419,11 @@ static	void	load_app_from_flash(void)
 	const	volatile	UW	*mem = cfgpage_app;
 	W	i;
 
-	lcdtp_sendlogs("app[0..3]=");
-	lcdtp_sendloguw(mem[0]);
-	lcdtp_sendlogs(" ");
-	lcdtp_sendloguw(mem[FLASHPAGEWORDS / 2]);
-	lcdtp_sendlogs(" check=");
-	lcdtp_sendloguw((UW)checkflashpage(mem));
+	lcdtp_sendlogs("app m[0]="); lcdtp_sendloguw(mem[0]);
+	lcdtp_sendlogs(" m[8]=");    lcdtp_sendloguw(mem[8]);
+	lcdtp_sendlogs(" m[128]=");  lcdtp_sendloguw(mem[FLASHPAGEWORDS / 2]);
+	lcdtp_sendlogs(" m[136]=");  lcdtp_sendloguw(mem[FLASHPAGEWORDS / 2 + 8]);
+	lcdtp_sendlogs(" chk=");     lcdtp_sendloguw((UW)checkflashpage(mem));
 	lcdtp_sendlogs("\n");
 	if (checkflashpage(mem) < 0) {
 		stored_key[0] = 0;
@@ -432,6 +431,7 @@ static	void	load_app_from_flash(void)
 		parse_stored_url();
 		return;
 	}
+	lcdtp_sendlogs("load OK, copying...\n");
 	for (i=0; i<8; i++)
 		((UW*)stored_key)[i] = mem[i];
 	for (i=0; i<URL_MAX / 4; i++)
