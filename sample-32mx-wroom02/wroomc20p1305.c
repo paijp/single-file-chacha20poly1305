@@ -344,6 +344,10 @@ static	void	writeflashpage(const volatile UW *mem, UW v)
 }
 
 
+/* Returns 0 if the page passes the bit-inversion redundancy check, -1 if
+   not. Callers that want the first word read it from mem[0] themselves —
+   returning it here would conflate "first word looks negative" with "page
+   invalid" once a key with the high bit set lives there. */
 static	W	checkflashpage(const volatile UW *mem)
 {
 	W	i;
@@ -351,7 +355,7 @@ static	W	checkflashpage(const volatile UW *mem)
 	for (i=0; i<FLASHPAGEWORDS / 2; i++)
 		if ((mem[i] ^ mem[i + FLASHPAGEWORDS / 2]) != 0xffffffff)
 			return -1;
-	return mem[0];
+	return 0;
 }
 
 
@@ -419,19 +423,12 @@ static	void	load_app_from_flash(void)
 	const	volatile	UW	*mem = cfgpage_app;
 	W	i;
 
-	lcdtp_sendlogs("app m[0]="); lcdtp_sendloguw(mem[0]);
-	lcdtp_sendlogs(" m[8]=");    lcdtp_sendloguw(mem[8]);
-	lcdtp_sendlogs(" m[128]=");  lcdtp_sendloguw(mem[FLASHPAGEWORDS / 2]);
-	lcdtp_sendlogs(" m[136]=");  lcdtp_sendloguw(mem[FLASHPAGEWORDS / 2 + 8]);
-	lcdtp_sendlogs(" chk=");     lcdtp_sendloguw((UW)checkflashpage(mem));
-	lcdtp_sendlogs("\n");
 	if (checkflashpage(mem) < 0) {
 		stored_key[0] = 0;
 		stored_url[0] = 0;
 		parse_stored_url();
 		return;
 	}
-	lcdtp_sendlogs("load OK, copying...\n");
 	for (i=0; i<8; i++)
 		((UW*)stored_key)[i] = mem[i];
 	for (i=0; i<URL_MAX / 4; i++)
@@ -674,15 +671,13 @@ int	main(int ac, char **av)
 		}
 	}
 	{
-		W	i;
-
-		if ((i = checkflashpage(flashpage0)) >= 0)
-			c20p1305nvcounter = i;
-		lcdtp_sendloguw(i);
+		if (checkflashpage(flashpage0) >= 0)
+			c20p1305nvcounter = flashpage0[0];
+		lcdtp_sendloguw(c20p1305nvcounter);
 		lcdtp_sendlogs(":page0\n");
-		if ((i = checkflashpage(flashpage1)) >= 0)
-			c20p1305nvcounter = i;
-		lcdtp_sendloguw(i);
+		if (checkflashpage(flashpage1) >= 0)
+			c20p1305nvcounter = flashpage1[0];
+		lcdtp_sendloguw(c20p1305nvcounter);
 		lcdtp_sendlogs(":page1\n");
 
 		writeflashpage(flashpage0, c20p1305nvcounter + 1);
