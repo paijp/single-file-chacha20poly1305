@@ -419,6 +419,13 @@ static	void	load_app_from_flash(void)
 	const	volatile	UW	*mem = cfgpage_app;
 	W	i;
 
+	lcdtp_sendlogs("app[0..3]=");
+	lcdtp_sendloguw(mem[0]);
+	lcdtp_sendlogs(" ");
+	lcdtp_sendloguw(mem[FLASHPAGEWORDS / 2]);
+	lcdtp_sendlogs(" check=");
+	lcdtp_sendloguw((UW)checkflashpage(mem));
+	lcdtp_sendlogs("\n");
 	if (checkflashpage(mem) < 0) {
 		stored_key[0] = 0;
 		stored_url[0] = 0;
