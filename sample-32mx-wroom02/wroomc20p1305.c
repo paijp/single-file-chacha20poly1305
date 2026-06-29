@@ -572,10 +572,13 @@ static	void	simulate_wifi_barcode(void)
 
 static	void	simulate_c20p_barcode(void)
 {
+	/* One-off pairing barcode produced by sample-host/gen-key.sh on
+	   k-keiei.jp. Replace by re-running gen-key.sh and updating this
+	   string (or wire a real USB-HID reader and drop simulate entirely). */
 	static	const	UB	demo[] =
-		"C20P:K:0000000011111111222222223333333344444444"
-		"555555556666666677777777"
-		";U:http://k-keiei.jp/wifi0/?id=0&key0c20=;;";
+		"C20P:K:a18ef6b4ef0972dca6297cc54280d68e"
+		"fab927cd374bdf634f56dde24490a594"
+		";U:http://k-keiei.jp/wifi0/?id=6686118321201539&key0c20=;;";
 
 	lcdtp_sendlogs("simulated c20p barcode:\n");
 	lcdtp_sendlogs(demo);
