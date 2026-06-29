@@ -45,7 +45,9 @@
 
 ### php
 
-- The if ((1)) in the source code is test code. Disable it when used.
+- The two `if (count(get_included_files()) <= 1) { ... }` blocks at the end of
+  the source are self-tests that only run when the file is invoked directly
+  (`php c20p1305.php`); when it is `require`d they are skipped automatically.
 
 ```
 $plaintext = array();
@@ -71,6 +73,41 @@ $plaintext = $chacha20->crypt($ciphertext, $key, $nonce);
 ```
 
 
+## SAMPLES
+
+### `sample-host/` — receiver (PHP) with per-device pairing
+
+A small PHP receiver that pairs with one device at a time via a generated
+ChaCha20-Poly1305 key:
+
+- `gen-key.sh` — generates a random 32-byte key, writes it to
+  `keys/<random-id>`, and prints the matching `C20P:K:<hex>;U:<URL>;;`
+  barcode both as text and as a UTF-8 QR rendering for terminal scanning.
+- `index.php` — looks up the key by `?id=...`, verifies the Poly1305 MAC,
+  and guards against replay using a single state file per id
+  (`<last request hex>\\t<last response hex>`):
+  - exact request match → return the cached response (idempotent retry)
+  - nonce ≤ last → silent reject (replay, or nonce reuse with different
+    body — a key-compromise signal)
+  - otherwise → process and overwrite state atomically
+
+See `sample-host/README.md` for setup, web-server config and security notes.
+
+### `sample-32mx-wroom02/` — PIC32MX270 + ESP-WROOM-02 firmware
+
+Companion firmware that pairs to the receiver above by reading two
+independent barcodes (currently simulated by sending `X` or `Y` on
+`/dev/ttyACM0`; the same hook can be driven by a real USB-HID scanner):
+
+- `WIFI:T:WPA;S:<ssid>;P:<pass>;;` — Wi-Fi credentials.
+- `C20P:K:<64 hex>;U:<full URL up to "key0c20=">;;` — ChaCha20 key + endpoint.
+
+Both are persisted to internal flash. The boot path loads them, opens the
+connection via the WROOM-02, and sends/receives nonce-prefixed,
+Poly1305-authenticated bodies to the PHP receiver. The nonce counter itself
+is also persisted across power loss in a separate redundant flash page pair.
+
+
 ## REFERENCE
 
 - poly1305 from https://github.com/floodyberry/poly1305-donna
@@ -80,3 +117,12 @@ $plaintext = $chacha20->crypt($ciphertext, $key, $nonce);
 ## LICENSE
 
 - MIT or PUBLIC DOMAIN.
+
+
+## ATTRIBUTION
+
+The `sample-host/` and `sample-32mx-wroom02/` directories — including the
+pairing flow, the C20P barcode format, the flash-storage scheme, the
+shell/PHP scaffolding and this README's SAMPLES section — were written by
+Claude Opus 4.7 in a pair-programming session with the repository author
+during 2026-06-27 / 2026-06-29.

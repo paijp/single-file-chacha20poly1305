@@ -339,7 +339,7 @@ function	cmp_array($a, $b, $log = 0)
 
 
 /* test a few basic operations */
-if ((1)) {
+if (count(get_included_files()) <= 1) {
 	/* example from nacl */
 	$nacl_key = array(
 		0xee,0xa6,0xa7,0x25,0x1c,0x1e,0x72,0x91,
@@ -409,7 +409,7 @@ if ((1)) {
 
 	$p = new poly1305($nacl_key);
 	$p->update($nacl_msg);
-	cmp_array($nacl_mac, $p->finish());
+	cmp_array($nacl_mac, $p->finish(), 1);
 	
 	$p = new poly1305($nacl_key);
 	$p->update(array_slice($nacl_msg, 0, 32));
@@ -423,11 +423,11 @@ if ((1)) {
 	$p->update(array_slice($nacl_msg, 128, 1));
 	$p->update(array_slice($nacl_msg, 129, 1));
 	$p->update(array_slice($nacl_msg, 130, 1));
-	cmp_array($nacl_mac, $p->finish());
+	cmp_array($nacl_mac, $p->finish(), 1);
 	
 	$p = new poly1305($wrap_key);
 	$p->update($wrap_msg);
-	cmp_array($wrap_mac, $p->finish());
+	cmp_array($wrap_mac, $p->finish(), 1);
 	
 	$p = new poly1305($total_key);
 	for ($i=0; $i<256; $i++) {
@@ -441,7 +441,7 @@ if ((1)) {
 		$q->update($msg);
 		$p->update($q->finish());
 	}
-	cmp_array($total_mac, $p->finish());
+	cmp_array($total_mac, $p->finish(), 1);
 	
 	$key = array();
 	for ($i=0; $i<32; $i++)
@@ -451,11 +451,11 @@ if ((1)) {
 		$msg[$i] = $i + 121;
 	$p = new poly1305($key);
 	$p->update($msg);
-	cmp_array(array(0xdd,0xb9,0xda,0x7d,0xdd,0x5e,0x52,0x79,0x27,0x30,0xed,0x5c,0xda,0x5f,0x90,0xa4), $p->finish());
+	cmp_array(array(0xdd,0xb9,0xda,0x7d,0xdd,0x5e,0x52,0x79,0x27,0x30,0xed,0x5c,0xda,0x5f,0x90,0xa4), $p->finish(), 1);
 }
 
 
-if ((1)) {
+if (count(get_included_files()) <= 1) {
 /* from https://github.com/wg/c20p1305 */
 	$plaintext = array(
 		0x4c, 0x61, 0x64, 0x69, 0x65, 0x73, 0x20, 0x61, 0x6e, 0x64, 0x20, 0x47, 0x65, 0x6e, 0x74, 0x6c,
@@ -493,10 +493,10 @@ if ((1)) {
 	);
 	
 	$c = new chacha20();
-	cmp_array($ciphertext, $work = $c->crypt($plaintext, $key, $nonce));
+	cmp_array($ciphertext, $work = $c->crypt($plaintext, $key, $nonce), 1);
 	print "encrypt ok.\n";
 	
-	cmp_array($tag, c20p1305_mac($aad, $work, $key, $nonce));
+	cmp_array($tag, c20p1305_mac($aad, $work, $key, $nonce), 1);
 	print "tag ok.\n";
 }
 
