@@ -12,6 +12,6 @@ help:
 %.o:	%.c
 	$(XC32)/xc32-gcc $(CFLAGS) $(SECRETS) -c $<
 
-wroomc20p1305.hex:	wroomc20p1305.o
-	$(XC32)/xc32-gcc $(LDFLAGS) -Wl,-Map=wroomc20p1305.map -o wroomc20p1305.out $^
-	$(XC32)/xc32-bin2hex wroomc20p1305.out
+%.hex:	%.o
+	$(XC32)/xc32-gcc $(LDFLAGS) -Wl,-Map=$*.map -o $*.out $^
+	$(XC32)/xc32-bin2hex $*.out
