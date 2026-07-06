@@ -89,20 +89,27 @@ if (($nonce[11] & 1))
 $nonce[11] |= 1;
 
 /*
-	FIFO bridge (created by gen-key.sh next to the key file): a local
-	process reads what the device sent from to_<id> and queues bytes for
-	the device in from_<id>. Both ends are non-blocking, best-effort:
-	- to_<id>: written only when a reader has it open (or bytes fit in the
-	  pipe buffer); otherwise the payload is dropped.
-	- from_<id>: up to 200 bytes are drained per request (the firmware's
-	  recvbuf is 256: 12 nonce + 200 body + 16 tag fits). Empty pipe ->
-	  empty (still authenticated) reply body.
-	Without FIFOs (old ids), fall back to echoing the payload + 0x72.
+	Bridge to local processes (both created by gen-key.sh):
+
+	from_<id> — FIFO, device -> local, log-style. Each decrypted device
+	payload is written non-blocking; a local `cat <>keys/from_<id>` tails
+	it. If nobody holds the FIFO open the bytes are dropped (best effort).
+
+	to_<id> — regular append-spool file + to_<id>.pos offset, local ->
+	device. Writers just `printf '...' >> keys/to_<id>`; O_APPEND makes
+	concurrent appends atomic and closing loses nothing. Up to 200 bytes
+	per request are read from the stored offset (the firmware's recvbuf is
+	256: 12 nonce + 200 body + 16 tag). Once fully drained past 64 KiB the
+	spool is truncated under flock; wrap appends in flock(1) too if the
+	instant of that truncation matters.
+
+	Without these files (old ids), fall back to echoing the payload + 0x72.
 */
-$to_fifo   = "$keys_dir/to_$id";
 $from_fifo = "$keys_dir/from_$id";
-if (is_file($key_file) && file_exists($to_fifo) && file_exists($from_fifo)) {
-	$fh = @fopen($to_fifo, "r+");	/* r+ never blocks on a FIFO */
+$to_spool  = "$keys_dir/to_$id";
+$to_pos    = "$keys_dir/to_$id.pos";
+if (file_exists($from_fifo) && file_exists($to_spool)) {
+	$fh = @fopen($from_fifo, "r+");	/* r+ never blocks on a FIFO */
 	if ($fh) {
 		stream_set_blocking($fh, false);
 		$s = "";
@@ -112,10 +119,23 @@ if (is_file($key_file) && file_exists($to_fifo) && file_exists($from_fifo)) {
 		fclose($fh);
 	}
 	$reply_src = array();
-	$fh = @fopen($from_fifo, "r+");
+	$fh = @fopen($to_spool, "r");
 	if ($fh) {
-		stream_set_blocking($fh, false);
+		flock($fh, LOCK_EX);
+		$pos = (int)@file_get_contents($to_pos);
+		fseek($fh, $pos);
 		$s = (string)@fread($fh, 200);
+		$pos += strlen($s);
+		$size = fstat($fh)['size'];
+		if ($pos >= $size && $size > 65536) {
+			/* fully drained and grown large: reset the spool */
+			$wh = fopen($to_spool, "r+");
+			ftruncate($wh, 0);
+			fclose($wh);
+			$pos = 0;
+		}
+		file_put_contents($to_pos, (string)$pos);
+		flock($fh, LOCK_UN);
 		fclose($fh);
 		for ($i=0; $i<strlen($s); $i++)
 			$reply_src[] = ord(substr($s, $i, 1));
