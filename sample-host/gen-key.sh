@@ -37,6 +37,12 @@ printf '%s' "$hex" > "$tmp"
 chmod 640 "$tmp"
 mv "$tmp" "$KEYS_DIR/$id"
 
+# FIFO pair bridging the device to a local process:
+#   to_<id>   — receiver writes each decrypted device payload here
+#   from_<id> — bytes queued here (max 200/request) ride back in the reply
+# Both are used non-blocking, best-effort; see index.php.
+mkfifo -m 660 "$KEYS_DIR/to_$id" "$KEYS_DIR/from_$id"
+
 barcode="C20P:K:${hex};U:${URL_BASE}?id=${id}&key0c20=;;"
 printf '%s\n\n' "$barcode"
 printf '%s' "$barcode" | qrencode -t UTF8 -m 2

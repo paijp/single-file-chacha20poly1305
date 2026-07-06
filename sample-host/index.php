@@ -88,7 +88,42 @@ if (($nonce[11] & 1))
 	die();
 $nonce[11] |= 1;
 
-$out[] = 0x72;	/* response marker */
+/*
+	FIFO bridge (created by gen-key.sh next to the key file): a local
+	process reads what the device sent from to_<id> and queues bytes for
+	the device in from_<id>. Both ends are non-blocking, best-effort:
+	- to_<id>: written only when a reader has it open (or bytes fit in the
+	  pipe buffer); otherwise the payload is dropped.
+	- from_<id>: up to 200 bytes are drained per request (the firmware's
+	  recvbuf is 256: 12 nonce + 200 body + 16 tag fits). Empty pipe ->
+	  empty (still authenticated) reply body.
+	Without FIFOs (old ids), fall back to echoing the payload + 0x72.
+*/
+$to_fifo   = "$keys_dir/to_$id";
+$from_fifo = "$keys_dir/from_$id";
+if (is_file($key_file) && file_exists($to_fifo) && file_exists($from_fifo)) {
+	$fh = @fopen($to_fifo, "r+");	/* r+ never blocks on a FIFO */
+	if ($fh) {
+		stream_set_blocking($fh, false);
+		$s = "";
+		foreach ($out as $c)
+			$s .= chr($c);
+		@fwrite($fh, $s);
+		fclose($fh);
+	}
+	$reply_src = array();
+	$fh = @fopen($from_fifo, "r+");
+	if ($fh) {
+		stream_set_blocking($fh, false);
+		$s = (string)@fread($fh, 200);
+		fclose($fh);
+		for ($i=0; $i<strlen($s); $i++)
+			$reply_src[] = ord(substr($s, $i, 1));
+	}
+	$out = $reply_src;
+} else {
+	$out[] = 0x72;	/* response marker (echo mode) */
+}
 
 $c = new chacha20();
 $reply    = $c->crypt($out, $key, $nonce);
