@@ -20,7 +20,7 @@
 	inline, not returning to USB processing until done. That stall is
 	acceptable here: barcode scanning is over once the window closes.
 
-	Debug log rides UTX2 on RPB9 (RB10/RB11 are the USB D+/D- pins, so the
+	Debug log rides UTX2 on RPB0/PGED1 (RB10/RB11 are the USB D+/D- pins, so the
 	usual PGD/PGC-pin UART is unavailable — the "restricted debug" of this
 	variant).
 
@@ -108,7 +108,8 @@ void	lcdtp_sendlogc(W c)
 	if ((first)) {
 		first = 0;
 
-		RPB9R = 2;		/* UTX2 — RB10/RB11 are the USB D+/D- pins here */
+		RPB0R = 2;		/* UTX2 on RPB0/PGED1 — the writer's debug line.
+					   RB10/RB11 are the USB D+/D- pins here. */
 		U2MODE = 0;
 		U2BRG = 86;		/* 115.4kbps */
 		U2MODE = 0x8008;	/* enable N81 4(U2BRG + 1) */
