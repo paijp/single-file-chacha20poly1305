@@ -42,7 +42,8 @@ P19__TSS_SDA	RPB7
 #pragma	config	POSCMOD=XT, OSCIOFNC=OFF, FPBDIV=DIV_1, FCKSM=CSECMD
 #pragma	config	WDTPS=PS16384, WINDIS=OFF, FWDTEN=OFF, FWDTWINSZ=WINSZ_50
 #pragma	config	DEBUG=OFF, JTAGEN=OFF, ICESEL=ICS_PGx2, PWP=OFF
-#pragma	config	BWP=OFF, CP=OFF
+/* CP=ON: the flash pages hold Wi-Fi credentials and the ChaCha20 key. */
+#pragma	config	BWP=OFF, CP=ON
 
 /*
 	All credentials/endpoint are configured at runtime by scanning two
