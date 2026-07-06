@@ -42,7 +42,9 @@ P19__TSS_SDA	RPB7
 #pragma	config	POSCMOD=XT, OSCIOFNC=OFF, FPBDIV=DIV_1, FCKSM=CSECMD
 #pragma	config	WDTPS=PS16384, WINDIS=OFF, FWDTEN=OFF, FWDTWINSZ=WINSZ_50
 #pragma	config	DEBUG=OFF, JTAGEN=OFF, ICESEL=ICS_PGx2, PWP=OFF
-#pragma	config	BWP=OFF, CP=OFF
+/* CP=ON: code protection — the flash pages hold Wi-Fi credentials and the
+   ChaCha20 key, so block external readout. */
+#pragma	config	BWP=OFF, CP=ON
 
 /*
 	UART-barcode-reader variant: for BARCODE_WINDOW_MS (10 s) after boot the
@@ -581,8 +583,24 @@ static	void	parse_c20p_barcode(const UB *s)
 */
 #define	BARCODE_WINDOW_MS	10000
 
+static	W	memsame(const UB *a, const UB *b, W len)
+{
+	while (len-- > 0)
+		if (*(a++) != *(b++))
+			return 0;
+	return 1;
+}
+
+
+/* A reader may deliver the same scan several times in one window; comparing
+   the parsed values against what's already stored avoids rewriting (and
+   wearing) the flash page for every repeat. */
 static	void	barcode_line(const UB *line)
 {
+	static	UB	prev_ssid[SSID_MAX + 1], prev_pass[PASS_MAX + 1];
+	static	UB	prev_key[32], prev_url[URL_MAX + 1];
+	W	i;
+
 	if (line[0] == 0)
 		return;
 	lcdtp_sendlogs("barcode: ");
@@ -590,7 +608,14 @@ static	void	barcode_line(const UB *line)
 	lcdtp_sendlogs("\n");
 	if (line[0] == 'W' && line[1] == 'I' && line[2] == 'F' && line[3] == 'I'
 	    && line[4] == ':') {
+		for (i=0; i<(W)sizeof(prev_ssid); i++) prev_ssid[i] = stored_ssid[i];
+		for (i=0; i<(W)sizeof(prev_pass); i++) prev_pass[i] = stored_pass[i];
 		parse_wifi_barcode(line);
+		if (memsame(prev_ssid, stored_ssid, sizeof(prev_ssid))
+		    && memsame(prev_pass, stored_pass, sizeof(prev_pass))) {
+			lcdtp_sendlogs("wifi unchanged.\n");
+			return;
+		}
 		lcdtp_sendlogs("ssid=");
 		lcdtp_sendlogs(stored_ssid);
 		lcdtp_sendlogs("\n");
@@ -598,7 +623,14 @@ static	void	barcode_line(const UB *line)
 		lcdtp_sendlogs("wifi saved.\n");
 	} else if (line[0] == 'C' && line[1] == '2' && line[2] == '0'
 	    && line[3] == 'P' && line[4] == ':') {
+		for (i=0; i<(W)sizeof(prev_key); i++) prev_key[i] = stored_key[i];
+		for (i=0; i<(W)sizeof(prev_url); i++) prev_url[i] = stored_url[i];
 		parse_c20p_barcode(line);
+		if (memsame(prev_key, stored_key, sizeof(prev_key))
+		    && memsame(prev_url, stored_url, sizeof(prev_url))) {
+			lcdtp_sendlogs("app unchanged.\n");
+			return;
+		}
 		lcdtp_sendlogs("url=");
 		lcdtp_sendlogs(stored_url);
 		lcdtp_sendlogs("\n");
