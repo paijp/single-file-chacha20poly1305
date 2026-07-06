@@ -1708,17 +1708,69 @@ static const char keycode_to_ascii_shift[58] = {
 	'?',  0,
 };
 
+/* JIS (JP 106/109) layout tables. Letters and digits match US; the symbol
+   block differs. Keycode 0x87 (International1, the "Ro" key) is JIS-only:
+   '\\' unshifted, '_' shifted — handled separately below. */
+static const char keycode_to_ascii_jis[58] = {
+	0,    0,    0,    0,   'a', 'b', 'c', 'd',
+	'e',  'f',  'g',  'h', 'i', 'j', 'k', 'l',
+	'm',  'n',  'o',  'p', 'q', 'r', 's', 't',
+	'u',  'v',  'w',  'x', 'y', 'z', '1', '2',
+	'3',  '4',  '5',  '6', '7', '8', '9', '0',
+	'\n', 0,   '\b', '\t', ' ', '-', '^', '@',
+	'[',  ']',  ']',  ';', ':', 0,   ',', '.',
+	'/',  0,
+};
+
+static const char keycode_to_ascii_jis_shift[58] = {
+	0,    0,    0,    0,   'A', 'B', 'C', 'D',
+	'E',  'F',  'G',  'H', 'I', 'J', 'K', 'L',
+	'M',  'N',  'O',  'P', 'Q', 'R', 'S', 'T',
+	'U',  'V',  'W',  'X', 'Y', 'Z', '!', '"',
+	'#',  '$',  '%',  '&', '\'', '(', ')', 0,
+	'\n', 0,   '\b', '\t', ' ', '=', '~', '`',
+	'{',  '}',  '}',  '+', '*', 0,   '<', '>',
+	'?',  0,
+};
+
+/*
+	Layout auto-detection: barcode content (WIFI:/C20P: grammar) never
+	contains an apostrophe or a double quote, but every scan contains ':'.
+	A reader enumerated with JIS layout in mind sends keycode 0x34 for ':',
+	which the US table decodes as '\'' (or '"' shifted). The first time
+	that happens we latch JIS mode and re-decode the very same keycode, so
+	the triggering character is already delivered correctly.
+*/
+static uint8_t g_layout_jis = 0;
+
 static char keycode_to_char(uint8_t keycode, uint8_t modifier)
 {
+	char c;
+
+	/* JIS "Ro" key (International1): '\' unshifted, '_' shifted. */
+	if (keycode == 0x87) {
+		g_layout_jis = 1;
+		return (modifier & 0x22) ? '_' : '\\';
+	}
+	/* JIS Yen key (International3): '\' unshifted, '|' shifted. */
+	if (keycode == 0x89) {
+		g_layout_jis = 1;
+		return (modifier & 0x22) ? '|' : '\\';
+	}
 	if (keycode >= sizeof(keycode_to_ascii)) {
 		return 0;
 	}
 	/* Barcode scans carry ':', ';', '&', '?', '_', uppercase, etc., so
 	   shift must map the full table, not just letters. */
-	if (modifier & 0x22) {
-		return keycode_to_ascii_shift[keycode];
+	if (!g_layout_jis) {
+		c = (modifier & 0x22) ? keycode_to_ascii_shift[keycode]
+		                      : keycode_to_ascii[keycode];
+		if (c != '\'' && c != '"')
+			return c;
+		g_layout_jis = 1;	/* fall through and re-decode as JIS */
 	}
-	return keycode_to_ascii[keycode];
+	return (modifier & 0x22) ? keycode_to_ascii_jis_shift[keycode]
+	                         : keycode_to_ascii_jis[keycode];
 }
 
 
