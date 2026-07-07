@@ -37,14 +37,10 @@ printf '%s' "$hex" > "$tmp"
 chmod 640 "$tmp"
 mv "$tmp" "$KEYS_DIR/$id"
 
-# Bridge to local processes (see index.php):
-#   from_<id>     — FIFO, device -> local. Tail it with: cat <>from_<id>
-#   to_<id>(.pos) — append spool + read offset, local -> device.
-#                   Queue bytes with:  printf '...' >> to_<id>
-mkfifo -m 660 "$KEYS_DIR/from_$id"
-: > "$KEYS_DIR/to_$id"
-printf '0' > "$KEYS_DIR/to_$id.pos"
-chmod 660 "$KEYS_DIR/to_$id" "$KEYS_DIR/to_$id.pos"
+# Bridge to local processes (both FIFOs; see index.php and to-drain.sh):
+#   from_<id> — device -> local. Tail it with:      cat <>from_<id>
+#   to_<id>   — local -> device. Queue bytes with:  printf '...' > to_<id>
+mkfifo -m 660 "$KEYS_DIR/from_$id" "$KEYS_DIR/to_$id"
 
 barcode="C20P:K:${hex};U:${URL_BASE}?id=${id}&key0c20=;;"
 printf '%s\n\n' "$barcode"

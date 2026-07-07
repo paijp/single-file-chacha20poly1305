@@ -89,26 +89,25 @@ if (($nonce[11] & 1))
 $nonce[11] |= 1;
 
 /*
-	Bridge to local processes (both created by gen-key.sh):
+	Bridge to local processes (both FIFOs, created by gen-key.sh):
 
-	from_<id> — FIFO, device -> local, log-style. Each decrypted device
-	payload is written non-blocking; a local `cat <>keys/from_<id>` tails
-	it. If nobody holds the FIFO open the bytes are dropped (best effort).
+	from_<id> — device -> local, log-style. Each decrypted device payload
+	is written non-blocking; a local `cat <>keys/from_<id>` tails it. If
+	nobody holds the FIFO open the bytes are dropped (best effort).
 
-	to_<id> — regular append-spool file + to_<id>.pos offset, local ->
-	device. Writers just `printf '...' >> keys/to_<id>`; O_APPEND makes
-	concurrent appends atomic and closing loses nothing. Up to 200 bytes
-	per request are read from the stored offset (the firmware's recvbuf is
-	256: 12 nonce + 200 body + 16 tag). Once fully drained past 64 KiB the
-	spool is truncated under flock; wrap appends in flock(1) too if the
-	instant of that truncation matters.
+	to_<id> — local -> device. Writers just `printf '...' > keys/to_<id>`.
+	to-drain.sh reads up to 200 bytes per request (the firmware's recvbuf
+	is 256: 12 nonce + 200 body + 16 tag) and parks a detached 10 s holder
+	on the pipe, so unread bytes survive between requests without any
+	daemon. Writers that arrive while no holder is alive block in open()
+	until the next request. Bytes are lost only when data sits unread
+	through 10+ s of no device access.
 
 	Without these files (old ids), fall back to echoing the payload + 0x72.
 */
 $from_fifo = "$keys_dir/from_$id";
-$to_spool  = "$keys_dir/to_$id";
-$to_pos    = "$keys_dir/to_$id.pos";
-if (file_exists($from_fifo) && file_exists($to_spool)) {
+$to_fifo   = "$keys_dir/to_$id";
+if (file_exists($from_fifo) && file_exists($to_fifo)) {
 	$fh = @fopen($from_fifo, "r+");	/* r+ never blocks on a FIFO */
 	if ($fh) {
 		stream_set_blocking($fh, false);
@@ -118,28 +117,11 @@ if (file_exists($from_fifo) && file_exists($to_spool)) {
 		@fwrite($fh, $s);
 		fclose($fh);
 	}
+	$s = (string)shell_exec("sh " . escapeshellarg(__DIR__ . "/to-drain.sh")
+	                        . " " . escapeshellarg($to_fifo));
 	$reply_src = array();
-	$fh = @fopen($to_spool, "r");
-	if ($fh) {
-		flock($fh, LOCK_EX);
-		$pos = (int)@file_get_contents($to_pos);
-		fseek($fh, $pos);
-		$s = (string)@fread($fh, 200);
-		$pos += strlen($s);
-		$size = fstat($fh)['size'];
-		if ($pos >= $size && $size > 65536) {
-			/* fully drained and grown large: reset the spool */
-			$wh = fopen($to_spool, "r+");
-			ftruncate($wh, 0);
-			fclose($wh);
-			$pos = 0;
-		}
-		file_put_contents($to_pos, (string)$pos);
-		flock($fh, LOCK_UN);
-		fclose($fh);
-		for ($i=0; $i<strlen($s); $i++)
-			$reply_src[] = ord(substr($s, $i, 1));
-	}
+	for ($i=0; $i<strlen($s); $i++)
+		$reply_src[] = ord(substr($s, $i, 1));
 	$out = $reply_src;
 } else {
 	$out[] = 0x72;	/* response marker (echo mode) */
