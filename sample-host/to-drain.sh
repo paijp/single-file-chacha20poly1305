@@ -2,7 +2,7 @@
 #
 # to-drain.sh <fifo> — used by index.php; not usually run by hand.
 #
-# Print up to 200 bytes from the FIFO to stdout without blocking, then keep
+# Print up to 1000 bytes from the FIFO to stdout without blocking, then keep
 # the pipe's contents alive for the next request by parking a detached
 # holder (`sleep 10`) on it. FIFO data survives only while some fd is open,
 # and the web request that read it is about to exit — the holder bridges
@@ -16,6 +16,6 @@
 
 fifo="$1"
 exec 3<>"$fifo"
-dd if="$fifo" iflag=nonblock bs=200 count=1 2>/dev/null
+dd if="$fifo" iflag=nonblock bs=1000 count=1 2>/dev/null
 sleep 10 <&3 >/dev/null 2>&1 &
 exec 3>&-

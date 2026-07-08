@@ -645,6 +645,63 @@ static	W	g_wifi_ok = 0;
 
 
 /*
+	Byte-stream layer over the WROOM's active-mode TCP output: strips the
+	"+IPD,<len>:" framing so a response spanning several TCP segments reads
+	as one continuous stream. Returns the next payload byte, or -1 once the
+	connection reports CLOSED before another data frame. Call ipd_reset()
+	before each response.
+*/
+static	W	ipd_remain = 0;
+
+static	void	ipd_reset(void)
+{
+	ipd_remain = 0;
+}
+
+static	W	ipd_getc(void)
+{
+	static	const	UB	hdr[] = "+IPD,";
+	static	const	UB	closed[] = "CLOSED";
+	const	UB	*p = hdr;
+	const	UB	*q = closed;
+	W	c, len;
+
+	if (ipd_remain <= 0) {
+		for (;;) {
+			c = c4wroom(-1);
+			lcdtp_sendlogc(c);
+			if (c == *p) {
+				if (*(++p) == 0)
+					break;
+			} else
+				p = (c == hdr[0]) ? hdr + 1 : hdr;
+			if (c == *q) {
+				if (*(++q) == 0)
+					return -1;
+			} else
+				q = (c == closed[0]) ? closed + 1 : closed;
+		}
+		len = 0;
+		for (;;) {
+			c = c4wroom(-1);
+			lcdtp_sendlogc(c);
+			if (c == ':')
+				break;
+			if (c >= '0' && c <= '9')
+				len = len * 10 + (c - '0');
+		}
+		if (len <= 0)
+			return -1;
+		ipd_remain = len;
+	}
+	ipd_remain--;
+	c = c4wroom(-1);
+	lcdtp_sendlogc(c);
+	return c;
+}
+
+
+/*
 	One encrypted exchange with the server.
 
 	payload/len ride in the query. wantreply=0 sets the nonce[11] LSB flag:
@@ -707,19 +764,36 @@ static	W	send_request(const UB *payload, W len, W wantreply, UB *rbuf, W rbufmax
 		return 0;
 	}
 	{
-		static	UB	recvbuf[256];
+		static	UB	recvbuf[2048];
 		static	UB	mac[16];
+		static	const	UB	marker[] = "key0c20=";
+		const	UB	*mp;
 		W	pos;
 		W	c, upper;
 		W	i;
 
 		c20p1305nonce[11] |= 1;
 
-		wroom4cmd(req2, "key0c20=", -1);
+		/* Hunt for "key0c20=" inside the de-framed +IPD stream, then read
+		   hex until a non-hex byte or connection close. The response may
+		   span several TCP segments; ipd_getc() hides the "+IPD,<n>:"
+		   headers that would otherwise cut the hex short. */
+		ipd_reset();
+		mp = marker;
+		for (;;) {
+			if ((c = ipd_getc()) < 0)
+				return 0;
+			if (c == *mp) {
+				if (*(++mp) == 0)
+					break;
+			} else
+				mp = (c == marker[0]) ? marker + 1 : marker;
+		}
 		pos = 0;
 		upper = -1;
 		while (pos < (W)sizeof(recvbuf)) {
-			c = c4wroom(-1);
+			if ((c = ipd_getc()) < 0)
+				break;
 			if ((c >= '0')&&(c <= '9'))
 				c = c - '0';
 			else if ((c >= 'A')&&(c <= 'F'))
@@ -736,7 +810,8 @@ static	W	send_request(const UB *payload, W len, W wantreply, UB *rbuf, W rbufmax
 			upper = -1;
 			recvbuf[pos++] = c;
 		}
-		wroom4cmd("", "\nCLOSED", -1);
+		if (c >= 0)
+			wroom4cmd("", "\nCLOSED", -1);
 		if (pos < 12 + 16)
 			return 0;
 		for (i=0; i<12; i++)
@@ -759,25 +834,49 @@ static	W	send_request(const UB *payload, W len, W wantreply, UB *rbuf, W rbufmax
 }
 
 
-/* Collect HID keystrokes into one line. During the scan window a completed
-   line is a barcode; afterwards it is forwarded to the server as "k="+line
-   with the no-reply nonce flag. */
-static	void	barcode_char(UB c)
+static	W	barcode_prefix_ok(const UB *s)
 {
-	static	UB	linebuf[2 + 256] = {'k', '='};
-	static	W	pos = 2;
+	if (s[0] == 'W' && s[1] == 'I' && s[2] == 'F' && s[3] == 'I' && s[4] == ':')
+		return 1;
+	if (s[0] == 'C' && s[1] == '2' && s[2] == '0' && s[3] == 'P' && s[4] == ':')
+		return 1;
+	return 0;
+}
 
-	if (c == '\r' || c == '\n') {
+
+/* Collect HID keystrokes into one line, decoded through BOTH keyboard
+   layouts in parallel. During the scan window the completed line is a
+   barcode: the compile-time default layout's decode is tried first and the
+   alternate layout's used as fallback (its prefix check makes the choice
+   unambiguous — auto-detection without guessing single characters). After
+   the window only the default layout is used, "k="+line, no-reply flag. */
+static	void	barcode_char(UB c_def, UB c_alt)
+{
+	static	UB	linebuf[2 + 256] = {'k', '='};	/* default layout */
+	static	UB	linealt[256];			/* alternate layout */
+	static	W	pos = 2;
+	static	W	posa = 0;
+
+	if (c_def == '\r' || c_def == '\n' || c_alt == '\r' || c_alt == '\n') {
 		linebuf[pos] = 0;
-		if (!app_done)
-			barcode_line(linebuf + 2);
-		else if (g_wifi_ok && pos > 2)
+		linealt[posa] = 0;
+		if (!app_done) {
+			if (barcode_prefix_ok(linebuf + 2) || !barcode_prefix_ok(linealt))
+				barcode_line(linebuf + 2);
+			else {
+				lcdtp_sendlogs("(alternate keyboard layout)\n");
+				barcode_line(linealt);
+			}
+		} else if (g_wifi_ok && pos > 2)
 			send_request(linebuf, pos, 0, NULL, 0);
 		pos = 2;
+		posa = 0;
 		return;
 	}
-	if (pos < (W)sizeof(linebuf) - 1)
-		linebuf[pos++] = c;
+	if (c_def && pos < (W)sizeof(linebuf) - 1)
+		linebuf[pos++] = c_def;
+	if (c_alt && posa < (W)sizeof(linealt) - 1)
+		linealt[posa++] = c_alt;
 }
 
 
@@ -1747,49 +1846,35 @@ static const char keycode_to_ascii_jis_shift[58] = {
 };
 
 /*
-	Layout auto-detection: barcode content (WIFI:/C20P: grammar) never
-	contains an apostrophe or a double quote, but every scan contains ':'.
-	A reader enumerated with JIS layout in mind sends keycode 0x34 for ':',
-	which the US table decodes as '\'' (or '"' shifted). The first time
-	that happens we latch JIS mode and re-decode the very same keycode, so
-	the triggering character is already delivered correctly.
+	Keyboard layout. The compile-time default is JP (JIS); build with
+	-DHID_LAYOUT_US for US. During the barcode scan window every keystroke
+	is decoded through BOTH layouts in parallel and barcode_char() picks
+	the line whose prefix validates — automatic and unambiguous. After the
+	window (the "k=" phase) only the default layout is used.
 */
-/* Keyboard layout: JP (JIS) by default; build with -DHID_LAYOUT_US to start
-   in US. Either way the ' / " auto-latch below can still switch US -> JIS. */
 #ifdef HID_LAYOUT_US
-static uint8_t g_layout_jis = 0;
+#define HID_LAYOUT_DEFAULT_JIS	0
 #else
-static uint8_t g_layout_jis = 1;
+#define HID_LAYOUT_DEFAULT_JIS	1
 #endif
 
-static char keycode_to_char(uint8_t keycode, uint8_t modifier)
+static char keycode_to_char(uint8_t keycode, uint8_t modifier, uint8_t jis)
 {
-	char c;
-
-	/* JIS "Ro" key (International1): '\' unshifted, '_' shifted. */
-	if (keycode == 0x87) {
-		g_layout_jis = 1;
-		return (modifier & 0x22) ? '_' : '\\';
-	}
-	/* JIS Yen key (International3): '\' unshifted, '|' shifted. */
-	if (keycode == 0x89) {
-		g_layout_jis = 1;
-		return (modifier & 0x22) ? '|' : '\\';
-	}
+	/* JIS-only keys: International1 "Ro" and International3 Yen. */
+	if (keycode == 0x87)
+		return jis ? ((modifier & 0x22) ? '_' : '\\') : 0;
+	if (keycode == 0x89)
+		return jis ? ((modifier & 0x22) ? '|' : '\\') : 0;
 	if (keycode >= sizeof(keycode_to_ascii)) {
 		return 0;
 	}
 	/* Barcode scans carry ':', ';', '&', '?', '_', uppercase, etc., so
 	   shift must map the full table, not just letters. */
-	if (!g_layout_jis) {
-		c = (modifier & 0x22) ? keycode_to_ascii_shift[keycode]
-		                      : keycode_to_ascii[keycode];
-		if (c != '\'' && c != '"')
-			return c;
-		g_layout_jis = 1;	/* fall through and re-decode as JIS */
-	}
-	return (modifier & 0x22) ? keycode_to_ascii_jis_shift[keycode]
-	                         : keycode_to_ascii_jis[keycode];
+	if (jis)
+		return (modifier & 0x22) ? keycode_to_ascii_jis_shift[keycode]
+		                         : keycode_to_ascii_jis[keycode];
+	return (modifier & 0x22) ? keycode_to_ascii_shift[keycode]
+	                         : keycode_to_ascii[keycode];
 }
 
 
@@ -1825,7 +1910,7 @@ int main(void)
 			 */
 			while (!usb_is_detached()) {
 				if (app_done && g_wifi_ok) {
-					static uint8_t prbuf[224];
+					static uint8_t prbuf[1024];
 					W n;
 
 					n = send_request((const UB *)"p=", 2, 1,
@@ -1873,9 +1958,14 @@ int main(void)
 						continue;
 					}
 
-					c = keycode_to_char(kc, rep->modifier);
-					if (c) {
-						barcode_char((UB)c);
+					c = keycode_to_char(kc, rep->modifier,
+					                    HID_LAYOUT_DEFAULT_JIS);
+					{
+						char c2 = keycode_to_char(kc, rep->modifier,
+						                          !HID_LAYOUT_DEFAULT_JIS);
+						if (c || c2) {
+							barcode_char((UB)c, (UB)c2);
+						}
 					}
 				}
 				prev = *rep;

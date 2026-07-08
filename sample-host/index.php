@@ -106,9 +106,9 @@ $nonce[11] |= 1;
 	nobody holds the FIFO open the bytes are dropped (best effort).
 
 	to_<id> — local -> device. Writers just `printf '...' > keys/to_<id>`.
-	to-drain.sh reads up to 200 bytes per request (the firmware's recvbuf
-	is 256: 12 nonce + 200 body + 16 tag) and parks a detached 10 s holder
-	on the pipe, so unread bytes survive between requests without any
+	to-drain.sh reads up to 1000 bytes per request (the firmware's recvbuf
+	is 2048: (12 nonce + 1000 body + 16 tag) * 2 hex) and parks a detached
+	10 s holder on the pipe, so unread bytes survive between requests without any
 	daemon. Writers that arrive while no holder is alive block in open()
 	until the next request. Bytes are lost only when data sits unread
 	through 10+ s of no device access.
