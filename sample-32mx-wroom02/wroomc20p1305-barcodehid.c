@@ -641,17 +641,139 @@ static	void	barcode_line(const UB *line)
 static	W	window_ms_left = BARCODE_WINDOW_MS;
 static	W	app_done = 0;
 static	W	in_polltask = 0;
+static	W	g_wifi_ok = 0;
 
-/* Collect HID keystrokes into one scan line; dispatch on Enter. */
+
+/*
+	One encrypted exchange with the server.
+
+	payload/len ride in the query. wantreply=0 sets the nonce[11] LSB flag:
+	the server still delivers the payload to its from_<id> FIFO and advances
+	its replay state, but sends no body back and we don't wait for one.
+	With wantreply=1 the decrypted reply body is copied into rbuf; returns
+	its length (0 = empty/none, -1 = nonce/MAC mismatch).
+*/
+static	W	send_request(const UB *payload, W len, W wantreply, UB *rbuf, W rbufmax)
+{
+	static	const	UB	*bin2hex = "0123456789abcdef";
+	static	UB	buf[] = "AT+CIPSEND=0000\r\n";
+	UB	*p;
+	W	l, l2;
+
+	c20p1305vcounter += 2;
+	c20p1305nonce[4] = c20p1305nvcounter >> 24;
+	c20p1305nonce[5] = c20p1305nvcounter >> 16;
+	c20p1305nonce[6] = c20p1305nvcounter >> 8;
+	c20p1305nonce[7] = c20p1305nvcounter;
+	c20p1305nonce[8] = c20p1305vcounter >> 24;
+	c20p1305nonce[9] = c20p1305vcounter >> 16;
+	c20p1305nonce[10] = c20p1305vcounter >> 8;
+	c20p1305nonce[11] = c20p1305vcounter;
+	if (!wantreply)
+		c20p1305nonce[11] |= 1;
+
+	wroom4cmd(cipstart, "OK", -1);
+	dly_tsk(50);
+
+	l = 0;
+	while ((req[l]))
+		l++;
+	l2 = 0;
+	while ((req2[l2]))
+		l2++;
+	l = l + l2 + 24 + len * 2 + 32;
+	p = buf;
+	while (*(p++) != '=')
+		;
+	if (l >= 1000)
+		*(p++) = bin2hex[((l / 1000) % 10) & 0xf];
+	if (l >= 100)
+		*(p++) = bin2hex[((l / 100) % 10) & 0xf];
+	if (l >= 10)
+		*(p++) = bin2hex[((l / 10) % 10) & 0xf];
+	*(p++) = bin2hex[(l % 10) & 0xf];
+	*(p++) = 0xd;
+	*(p++) = 0xa;
+	*(p++) = 0;
+	wroom4cmd(buf, "OK", -1);
+
+	wroom4cmd(req, NULL, -1);
+	c20p1305_send(NULL, -1, stored_key, c20p1305nonce, wroom4ub);
+	c20p1305_send((UB*)payload, len, stored_key, c20p1305nonce, wroom4ub);
+	c20p1305_send(NULL, 0, stored_key, c20p1305nonce, wroom4ub);
+	wroom4cmd(req2, NULL, -1);
+	if (!wantreply) {
+		wroom4cmd("", "\nCLOSED", -1);
+		return 0;
+	}
+	{
+		static	UB	recvbuf[256];
+		static	UB	mac[16];
+		W	pos;
+		W	c, upper;
+		W	i;
+
+		c20p1305nonce[11] |= 1;
+
+		wroom4cmd(req2, "key0c20=", -1);
+		pos = 0;
+		upper = -1;
+		while (pos < (W)sizeof(recvbuf)) {
+			c = c4wroom(-1);
+			if ((c >= '0')&&(c <= '9'))
+				c = c - '0';
+			else if ((c >= 'A')&&(c <= 'F'))
+				c = c - 'A' + 0xa;
+			else if ((c >= 'a')&&(c <= 'f'))
+				c = c - 'a' + 0xa;
+			else
+				break;
+			if (upper < 0) {
+				upper = c << 4;
+				continue;
+			}
+			c |= upper;
+			upper = -1;
+			recvbuf[pos++] = c;
+		}
+		wroom4cmd("", "\nCLOSED", -1);
+		if (pos < 12 + 16)
+			return 0;
+		for (i=0; i<12; i++)
+			if (recvbuf[i] != c20p1305nonce[i]) {
+				lcdtp_sendlogs("nonce not match.\n");
+				return -1;
+			}
+		c20p1305_mac(mac, NULL, 0, recvbuf + 12, pos - 12 - 16, stored_key, c20p1305nonce);
+		for (i=0; i<(W)sizeof(mac); i++)
+			if (recvbuf[pos - sizeof(mac) + i] != mac[i]) {
+				lcdtp_sendlogs("mac not match.\n");
+				return -1;
+			}
+		c20p1305_xor(recvbuf + 12, pos - 12 - 16, stored_key, c20p1305nonce);
+		l = pos - 12 - 16;
+		for (i=0; i<l && i<rbufmax; i++)
+			rbuf[i] = recvbuf[12 + i];
+		return (l < rbufmax) ? l : rbufmax;
+	}
+}
+
+
+/* Collect HID keystrokes into one line. During the scan window a completed
+   line is a barcode; afterwards it is forwarded to the server as "k="+line
+   with the no-reply nonce flag. */
 static	void	barcode_char(UB c)
 {
-	static	UB	linebuf[256];
-	static	W	pos = 0;
+	static	UB	linebuf[2 + 256] = {'k', '='};
+	static	W	pos = 2;
 
 	if (c == '\r' || c == '\n') {
 		linebuf[pos] = 0;
-		pos = 0;
-		barcode_line(linebuf);
+		if (!app_done)
+			barcode_line(linebuf + 2);
+		else if (g_wifi_ok && pos > 2)
+			send_request(linebuf, pos, 0, NULL, 0);
+		pos = 2;
 		return;
 	}
 	if (pos < (W)sizeof(linebuf) - 1)
@@ -659,12 +781,11 @@ static	void	barcode_char(UB c)
 }
 
 
-/* Wi-Fi association + the encrypted request/response test loop.
+/* Wi-Fi association; on success later requests are sent on demand from the
+   USB loop (HID "k=" lines, printer "p=" polls) via send_request().
    Runs to completion; USB is not serviced meanwhile (accepted). */
 static	void	wifi_run(void)
 {
-	W	count0;
-
 	if (stored_ssid[0] == 0 || stored_url[0] == 0) {
 		lcdtp_sendlogs("config incomplete (need WIFI: and C20P: scans); skipping wifi.\n");
 		return;
@@ -719,116 +840,8 @@ static	void	wifi_run(void)
 		for (s=csuf; *s; s++) cipstart[i++] = *s;
 		cipstart[i] = 0;
 	}
-	for (count0=0; count0<20; count0++) {
-		static	const	UB	*bin2hex = "0123456789abcdef";
-		static	UB	buf[] = "AT+CIPSEND=0000\r\n";
-		static	UB	str[4];
-		UB	*p;
-		W	l, l2;
-
-		c20p1305vcounter += 2;
-		c20p1305nonce[4] = c20p1305nvcounter >> 24;
-		c20p1305nonce[5] = c20p1305nvcounter >> 16;
-		c20p1305nonce[6] = c20p1305nvcounter >> 8;
-		c20p1305nonce[7] = c20p1305nvcounter;
-		c20p1305nonce[8] = c20p1305vcounter >> 24;
-		c20p1305nonce[9] = c20p1305vcounter >> 16;
-		c20p1305nonce[10] = c20p1305vcounter >> 8;
-		c20p1305nonce[11] = c20p1305vcounter;
-
-		str[0] = bin2hex[0];
-		str[1] = bin2hex[0];
-		str[2] = bin2hex[((count0 / 10) % 10) & 0xf];
-		str[3] = bin2hex[(count0 % 10) & 0xf];
-
-		wroom4cmd(cipstart, "OK", -1);
-		dly_tsk(50);
-
-		l = 0;
-		while ((req[l]))
-			l++;
-		l2 = 0;
-		while ((req2[l2]))
-			l2++;
-		l = l + l2 + 24 + 8 + 32;
-		p = buf;
-		while (*(p++) != '=')
-			;
-		if (l >= 1000)
-			*(p++) = bin2hex[((l / 1000) % 10) & 0xf];
-		if (l >= 100)
-			*(p++) = bin2hex[((l / 100) % 10) & 0xf];
-		if (l >= 10)
-			*(p++) = bin2hex[((l / 10) % 10) & 0xf];
-		*(p++) = bin2hex[(l % 10) & 0xf];
-		*(p++) = 0xd;
-		*(p++) = 0xa;
-		*(p++) = 0;
-		wroom4cmd(buf, "OK", -1);
-
-		wroom4cmd(req, NULL, -1);
-		c20p1305_send(NULL, -1, stored_key, c20p1305nonce, wroom4ub);
-		c20p1305_send(str, 4, stored_key, c20p1305nonce, wroom4ub);
-		c20p1305_send(NULL, 0, stored_key, c20p1305nonce, wroom4ub);
-		wroom4cmd(req2, NULL, -1);
-		if ((c20p1305nonce[11] & 1) == 0) {
-			static	UB	recvbuf[256];
-			W	pos;
-			W	c, upper;
-
-			c20p1305nonce[11] |= 1;
-
-			wroom4cmd(req2, "key0c20=", -1);
-			pos = 0;
-			upper = -1;
-			while (pos < sizeof(recvbuf)) {
-				c = c4wroom(-1);
-				if ((c >= '0')&&(c <= '9'))
-					c = c - '0';
-				else if ((c >= 'A')&&(c <= 'F'))
-					c = c - 'A' + 0xa;
-				else if ((c >= 'a')&&(c <= 'f'))
-					c = c - 'a' + 0xa;
-				else
-					break;
-				if (upper < 0) {
-					upper = c << 4;
-					continue;
-				}
-				c |= upper;
-				upper = -1;
-				recvbuf[pos++] = c;
-			}
-			wroom4cmd("", "\nCLOSED", -1);
-			if (pos >= 12 + 16) {
-				static	UB	mac[16];
-				W	i;
-
-				for (i=0; i<12; i++)
-					if (recvbuf[i] != c20p1305nonce[i]) {
-						lcdtp_sendlogs("nonce not match.\n");
-						break;
-					}
-				c20p1305_mac(mac, NULL, 0, recvbuf + 12, pos - 12 - 16, stored_key, c20p1305nonce);
-				for (i=0; i<sizeof(mac); i++)
-					if (recvbuf[pos - sizeof(mac) + i] != mac[i]) {
-						lcdtp_sendlogs("mac not match.\n");
-						break;
-					}
-				c20p1305_xor(recvbuf + 12, pos - 12 - 16, stored_key, c20p1305nonce);
-				for (i=12; i<pos-16; i++) {
-					static	UB	s[2] = {'0', 0};
-
-					s[0] = recvbuf[i];
-					lcdtp_sendlogs(s);
-				}
-				lcdtp_sendlogs(":recv\n");
-			}
-		} else
-			wroom4cmd("", "\nCLOSED", -1);
-		dly_tsk(2000);
-	}
-	lcdtp_sendlogs("\ntest done.\n");
+	g_wifi_ok = 1;
+	lcdtp_sendlogs("wifi ready.\n");
 }
 
 
@@ -1741,7 +1754,13 @@ static const char keycode_to_ascii_jis_shift[58] = {
 	that happens we latch JIS mode and re-decode the very same keycode, so
 	the triggering character is already delivered correctly.
 */
+/* Keyboard layout: JP (JIS) by default; build with -DHID_LAYOUT_US to start
+   in US. Either way the ' / " auto-latch below can still switch US -> JIS. */
+#ifdef HID_LAYOUT_US
 static uint8_t g_layout_jis = 0;
+#else
+static uint8_t g_layout_jis = 1;
+#endif
 
 static char keycode_to_char(uint8_t keycode, uint8_t modifier)
 {
@@ -1800,12 +1819,25 @@ int main(void)
 
 		if (g_dev_type == USB_DEV_PRINTER) {
 			/*
-			 * Application hook: send data to the printer, e.g.
-			 *   usb_bulk_write((uint8_t *)print_data,
-			 *                  sizeof(print_data));
+			 * Poll the server with a bare "p=" request every 2 s and
+			 * feed any reply body straight to the printer. A non-empty
+			 * reply skips the wait so queued data drains at full rate.
 			 */
 			while (!usb_is_detached()) {
-				poll_call();
+				if (app_done && g_wifi_ok) {
+					static uint8_t prbuf[224];
+					W n;
+
+					n = send_request((const UB *)"p=", 2, 1,
+					                 (UB *)prbuf, (W)sizeof(prbuf));
+					if (n > 0) {
+						usb_bulk_write(prbuf, (uint16_t)n);
+						continue;
+					}
+					delay_usbms(2000);
+				} else {
+					poll_call();
+				}
 			}
 		} else if (g_dev_type == USB_DEV_KEYBOARD) {
 			prev.modifier = 0;

@@ -57,25 +57,34 @@ cmp_array($tag, c20p1305_mac(array(), $body, $key, $nonce));
 /* Replay / retry guard.
 
    State file holds "<last request hex>\t<last response hex>" (one line). The
-   first 24 hex chars are the nonce — comparing them lexicographically is the
-   same as the byte-wise numeric compare the firmware does.
+   first 24 hex chars are the nonce; its lowest bit is a flag, not part of
+   the counter — the device sets it when it does NOT want a response.
+   Comparing the flag-masked nonces lexicographically equals the byte-wise
+   numeric compare the firmware does.
 
-     req == last         → idempotent retry, return cached response
-     nonce(req) <= last  → replay (older) or nonce reuse with different body
-                           (key compromise / firmware bug) → silent reject
-     otherwise           → fresh, process and overwrite state
+     nonce == last nonce (incl. flag) → idempotent retry, return cached
+     masked nonce > masked last      → fresh, process and overwrite state
+     otherwise                        → silent reject (replay / reuse)
 */
+function nonce_masked($n)
+{
+	return substr($n, 0, 23) . dechex(hexdec(substr($n, 23, 1)) & 0xe);
+}
+
 $state_file = "$keys_dir/$id.state";
+$cur_nonce = substr($req_hex, 0, 24);
 $last = @file_get_contents($state_file);
 if ($last !== false) {
 	$parts = explode("\t", trim($last), 2);
 	$lreq  = $parts[0] ?? "";
 	$lresp = $parts[1] ?? "";
-	if ($req_hex === $lreq) {
-		print "key0c20=$lresp\n\n";
+	$lnonce = substr($lreq, 0, 24);
+	if ($cur_nonce === $lnonce) {
+		if ($lresp !== "")
+			print "key0c20=$lresp\n\n";
 		exit;
 	}
-	if (substr($req_hex, 0, 24) <= substr($lreq, 0, 24))
+	if (nonce_masked($cur_nonce) <= nonce_masked($lnonce))
 		die();
 }
 
@@ -83,9 +92,10 @@ if ($last !== false) {
 $c = new chacha20();
 $out = $c->crypt($body, $key, $nonce);
 
-/* Only the even-nonce[11] direction expects a reply (existing convention). */
-if (($nonce[11] & 1))
-	die();
+/* nonce[11] LSB set = the device does not want a response. The payload is
+   still delivered to from_<id> and the state still advances; only the
+   to_<id> drain and the encrypted reply are skipped. */
+$wantreply = !($nonce[11] & 1);
 $nonce[11] |= 1;
 
 /*
@@ -107,7 +117,8 @@ $nonce[11] |= 1;
 */
 $from_fifo = "$keys_dir/from_$id";
 $to_fifo   = "$keys_dir/to_$id";
-if (file_exists($from_fifo) && file_exists($to_fifo)) {
+$bridged = file_exists($from_fifo) && file_exists($to_fifo);
+if ($bridged) {
 	$fh = @fopen($from_fifo, "r+");	/* r+ never blocks on a FIFO */
 	if ($fh) {
 		stream_set_blocking($fh, false);
@@ -117,29 +128,37 @@ if (file_exists($from_fifo) && file_exists($to_fifo)) {
 		@fwrite($fh, $s);
 		fclose($fh);
 	}
-	$s = (string)shell_exec("sh " . escapeshellarg(__DIR__ . "/to-drain.sh")
-	                        . " " . escapeshellarg($to_fifo));
-	$reply_src = array();
-	for ($i=0; $i<strlen($s); $i++)
-		$reply_src[] = ord(substr($s, $i, 1));
-	$out = $reply_src;
-} else {
-	$out[] = 0x72;	/* response marker (echo mode) */
 }
 
-$c = new chacha20();
-$reply    = $c->crypt($out, $key, $nonce);
-$replytag = c20p1305_mac(array(), $reply, $key, $nonce);
-
 $resp_hex = "";
-foreach ($nonce as $c)    $resp_hex .= sprintf("%02x", $c);
-foreach ($reply as $c)    $resp_hex .= sprintf("%02x", $c);
-foreach ($replytag as $c) $resp_hex .= sprintf("%02x", $c);
+if ($wantreply) {
+	if ($bridged) {
+		$s = (string)shell_exec("sh " . escapeshellarg(__DIR__ . "/to-drain.sh")
+		                        . " " . escapeshellarg($to_fifo));
+		$reply_src = array();
+		for ($i=0; $i<strlen($s); $i++)
+			$reply_src[] = ord(substr($s, $i, 1));
+		$out = $reply_src;
+	} else {
+		$out[] = 0x72;	/* response marker (echo mode) */
+	}
+
+	$c = new chacha20();
+	$reply    = $c->crypt($out, $key, $nonce);
+	$replytag = c20p1305_mac(array(), $reply, $key, $nonce);
+
+	foreach ($nonce as $c)    $resp_hex .= sprintf("%02x", $c);
+	foreach ($reply as $c)    $resp_hex .= sprintf("%02x", $c);
+	foreach ($replytag as $c) $resp_hex .= sprintf("%02x", $c);
+}
 
 /* Persist <request, response> atomically (tmp + rename). Same-id concurrency
-   is assumed not to happen — a device only retries serially. */
+   is assumed not to happen — a device only retries serially. For no-reply
+   (flagged) requests the stored response is empty, so a retry of the same
+   nonce prints nothing, matching the original exchange. */
 $tmp = "$state_file." . getmypid();
 file_put_contents($tmp, "$req_hex\t$resp_hex");
 rename($tmp, $state_file);
 
-print "key0c20=$resp_hex\n\n";
+if ($resp_hex !== "")
+	print "key0c20=$resp_hex\n\n";
