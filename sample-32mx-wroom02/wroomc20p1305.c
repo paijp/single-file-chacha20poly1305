@@ -278,6 +278,63 @@ static	W	wroom4ub(W c)
 }
 
 
+/*
+	Byte-stream layer over the WROOM's active-mode TCP output: strips the
+	"+IPD,<len>:" framing so a response spanning several TCP segments reads
+	as one continuous stream. Returns the next payload byte, or -1 once the
+	connection reports CLOSED before another data frame. Call ipd_reset()
+	before each response.
+*/
+static	W	ipd_remain = 0;
+
+static	void	ipd_reset(void)
+{
+	ipd_remain = 0;
+}
+
+static	W	ipd_getc(void)
+{
+	static	const	UB	hdr[] = "+IPD,";
+	static	const	UB	closed[] = "CLOSED";
+	const	UB	*p = hdr;
+	const	UB	*q = closed;
+	W	c, len;
+
+	if (ipd_remain <= 0) {
+		for (;;) {
+			c = c4wroom(-1);
+			lcdtp_sendlogc(c);
+			if (c == *p) {
+				if (*(++p) == 0)
+					break;
+			} else
+				p = (c == hdr[0]) ? hdr + 1 : hdr;
+			if (c == *q) {
+				if (*(++q) == 0)
+					return -1;
+			} else
+				q = (c == closed[0]) ? closed + 1 : closed;
+		}
+		len = 0;
+		for (;;) {
+			c = c4wroom(-1);
+			lcdtp_sendlogc(c);
+			if (c == ':')
+				break;
+			if (c >= '0' && c <= '9')
+				len = len * 10 + (c - '0');
+		}
+		if (len <= 0)
+			return -1;
+		ipd_remain = len;
+	}
+	ipd_remain--;
+	c = c4wroom(-1);
+	lcdtp_sendlogc(c);
+	return c;
+}
+
+
 #define	FLASHPAGEWORDS	(1024 / sizeof(UW))
 
 /*
@@ -816,17 +873,35 @@ int	main(int ac, char **av)
 		c20p1305_send(NULL, 0, stored_key, c20p1305nonce, wroom4ub);
 		wroom4cmd(req2, NULL, -1);
 		if ((c20p1305nonce[11] & 1) == 0) {
-			static	UB	recvbuf[256];
+			static	UB	recvbuf[2048];
+			static	const	UB	marker[] = "key0c20=";
+			const	UB	*mp;
 			W	pos;
 			W	c, upper;
 
 			c20p1305nonce[11] |= 1;
 
-			wroom4cmd(req2, "key0c20=", -1);
+			/* Hunt for "key0c20=" inside the de-framed +IPD stream, then
+			   read hex until a non-hex byte or connection close. The
+			   response may span several TCP segments; ipd_getc() hides the
+			   "+IPD,<n>:" headers that would otherwise cut the hex short. */
+			wroom4cmd(req2, NULL, -1);
+			ipd_reset();
+			mp = marker;
+			for (;;) {
+				if ((c = ipd_getc()) < 0)
+					break;
+				if (c == *mp) {
+					if (*(++mp) == 0)
+						break;
+				} else
+					mp = (c == marker[0]) ? marker + 1 : marker;
+			}
 			pos = 0;
 			upper = -1;
-			while (pos < sizeof(recvbuf)) {
-				c = c4wroom(-1);
+			while (pos < (W)sizeof(recvbuf)) {
+				if ((c = ipd_getc()) < 0)
+					break;
 				if ((c >= '0')&&(c <= '9'))
 					c = c - '0';
 				else if ((c >= 'A')&&(c <= 'F'))
@@ -843,7 +918,11 @@ int	main(int ac, char **av)
 				upper = -1;
 				recvbuf[pos++] = c;
 			}
-			wroom4cmd("", "\nCLOSED", -1);
+			/* Drain trailing frame bytes + CLOSED via ipd_getc (-1 at
+			   CLOSED); a blocking wait on CLOSED would hang since ipd_getc
+			   has already eaten it while framing. */
+			while (c >= 0)
+				c = ipd_getc();
 			if (pos >= 12 + 16) {
 				static	UB	mac[16];
 				W	i;
