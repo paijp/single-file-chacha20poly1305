@@ -951,6 +951,16 @@ static	void	app_polltask(void)
 	if (in_polltask || app_done)
 		return;
 	in_polltask = 1;
+#ifdef DEBUG_UART_SCAN
+	/* Test hook (no barcode reader): during the scan window accept barcode
+	   text on U2RX/RB1 too, one keystroke's worth per byte through the US
+	   table (a real HID sends keycodes, but debug bytes are already ASCII —
+	   feed them to both layout slots as-is). */
+	if ((U2STAbits.URXDA)) {
+		UB ch = U2RXREG;
+		barcode_char(ch, ch);
+	}
+#endif
 	if ((IFS0bits.T2IF)) {
 		IFS0bits.T2IF = 0;
 		if (window_ms_left > 0)
@@ -982,6 +992,12 @@ static	void	app_init(void)
 	U1BRG = (10000000 / 115200) - 1;
 	U1MODE = 0x8008;	/* enable N81 4(U1BRG + 1) */
 	U1STA = 0x1400;
+
+#ifdef DEBUG_UART_SCAN
+	/* U2 RX on RB1 so barcode text can be injected over the debug line. */
+	U2RXR = 2;		/* RPB1 */
+	TRISBbits.TRISB1 = 1;
+#endif
 
 	T2CON = 0x0070;		/* 1/256 */
 	TMR2 = 0;
