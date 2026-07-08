@@ -810,8 +810,12 @@ static	W	send_request(const UB *payload, W len, W wantreply, UB *rbuf, W rbufmax
 			upper = -1;
 			recvbuf[pos++] = c;
 		}
-		if (c >= 0)
-			wroom4cmd("", "\nCLOSED", -1);
+		/* Drain the rest of the stream (trailing frame bytes and the
+		   CLOSED notification) via ipd_getc, which returns -1 at CLOSED.
+		   A separate blocking wait on the "CLOSED" marker would hang: by
+		   now ipd_getc has already consumed it while framing. */
+		while (c >= 0)
+			c = ipd_getc();
 		if (pos < 12 + 16)
 			return 0;
 		for (i=0; i<12; i++)
