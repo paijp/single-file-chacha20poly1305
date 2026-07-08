@@ -956,8 +956,13 @@ static	void	app_polltask(void)
 	   text on U2RX/RB1 too, one keystroke's worth per byte through the US
 	   table (a real HID sends keycodes, but debug bytes are already ASCII —
 	   feed them to both layout slots as-is). */
+	if ((U2STAbits.OERR))
+		U2STA = 0x1400;
 	if ((U2STAbits.URXDA)) {
 		UB ch = U2RXREG;
+		lcdtp_sendlogs("<rx:");
+		lcdtp_sendlogub(ch);
+		lcdtp_sendlogs(">");
 		barcode_char(ch, ch);
 	}
 #endif
