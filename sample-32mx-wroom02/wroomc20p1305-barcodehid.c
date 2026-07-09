@@ -885,7 +885,7 @@ static	void	barcode_char(UB c_def, UB c_alt)
 
 
 /* Wi-Fi association; on success later requests are sent on demand from the
-   USB loop (HID "k=" lines, printer "p=" polls) via send_request().
+   USB loop (HID "k=" lines, printer "p=XX" status polls) via send_request().
    Runs to completion; USB is not serviced meanwhile (accepted). */
 static	void	wifi_run(void)
 {
@@ -1542,6 +1542,27 @@ static void usb_set_interface(uint8_t if_num, uint8_t alt_num)
 	ctrl_in_zlp();
 }
 
+/* Printer class GET_PORT_STATUS: one byte, bit5 paper-out, bit4
+   selected, bit3 no-error (centronics polarity). Returns 0..255 on
+   success, -1 when the device does not answer with a full byte. */
+static int usb_printer_get_port_status(void)
+{
+	uint8_t setup[8];
+	uint8_t status;
+
+	setup[0] = 0xA1; setup[1] = 0x01;
+	setup[2] = 0x00; setup[3] = 0x00;
+	setup[4] = 0x00; setup[5] = 0x00;
+	setup[6] = 0x01; setup[7] = 0x00;
+
+	ctrl_setup(setup);
+	if (ctrl_in(&status, 1) != 1) {
+		return -1;
+	}
+	ctrl_out_zlp();
+	return status;
+}
+
 /* ============================================================
  * Configuration descriptor parser
  * ============================================================ */
@@ -1929,16 +1950,32 @@ int main(void)
 
 		if (g_dev_type == USB_DEV_PRINTER) {
 			/*
-			 * Poll the server with a bare "p=" request every 2 s and
-			 * feed any reply body straight to the printer. A non-empty
-			 * reply skips the wait so queued data drains at full rate.
+			 * Poll the server with a "p=XX" request every 2 s, where
+			 * XX is the printer's GET_PORT_STATUS byte in hex (bare
+			 * "p=" when the status read fails), and feed any reply
+			 * body straight to the printer. A non-empty reply skips
+			 * the wait so queued data drains at full rate.
 			 */
 			while (!usb_is_detached()) {
 				if (app_done && g_wifi_ok) {
+					static const UB *bin2hex = (const UB *)"0123456789abcdef";
 					static uint8_t prbuf[1024];
+					UB  preq[4];
+					W   plen;
+					int pst;
 					W n;
 
-					n = send_request((const UB *)"p=", 2, 1,
+					preq[0] = 'p';
+					preq[1] = '=';
+					plen = 2;
+					pst = usb_printer_get_port_status();
+					if (pst >= 0) {
+						preq[2] = bin2hex[(pst >> 4) & 0xf];
+						preq[3] = bin2hex[pst & 0xf];
+						plen = 4;
+					}
+
+					n = send_request(preq, plen, 1,
 					                 (UB *)prbuf, (W)sizeof(prbuf));
 					if (n > 0) {
 						usb_bulk_write(prbuf, (uint16_t)n);
