@@ -95,10 +95,14 @@ $out = $c->crypt($body, $key, $nonce);
 /* Transport parameters: the plaintext may start with /[G-Zg-z][0-9A-Fa-f]+/
    tokens (key letters and hex digits are disjoint alphabets, so no escaping);
    the application payload runs from the first /[G-Zg-z]=/ marker to the end
-   (binary). Parameters are consumed here and NOT forwarded to the FIFO.
+   (binary), the marker key being part of the payload. A bare '=' where the
+   next key letter would sit ("s800=<binary>") also ends the parameters, and
+   only what follows it is payload. Parameters are consumed here and NOT
+   forwarded to the FIFO.
 
      s<hex> — the device's decoded receive capacity in bytes
-              (12 nonce + body + 16 tag), e.g. "s800" = 2 KB.
+              (12 nonce + body + 16 tag), e.g. "s0800" = 2 KB
+              (leading zeros allowed).
 
    Payloads from older firmware ("p=18", bare digits, ...) fall through
    unchanged: a leading /[G-Zg-z]=/ marker or any non-key byte stops the
@@ -108,6 +112,10 @@ $i = 0;
 $n = count($out);
 while ($i < $n) {
 	$k = chr($out[$i]);
+	if ($k == '=') {
+		$i++;			/* bare '=': payload starts after it */
+		break;
+	}
 	if (!preg_match('/^[G-Zg-z]$/', $k))
 		break;
 	if ($i + 1 < $n && $out[$i + 1] == ord('='))

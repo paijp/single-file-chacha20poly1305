@@ -717,23 +717,24 @@ static	W	ipd_getc(void)
 	The plaintext starts with transport parameters — /[G-Zg-z][0-9A-Fa-f]+/
 	tokens, key letters and hex digits being disjoint alphabets so no
 	escaping is needed — followed by the application payload from the first
-	/[G-Zg-z]=/ marker on. The only parameter sent is "s<hex>": RECVBUF_SIZE,
-	e.g. "s800p=18" for a 2 KB buffer.
+	/[G-Zg-z]=/ marker on (a bare '=' also ends the parameters, with the
+	payload starting after it). The only parameter sent is "s<hex4>":
+	RECVBUF_SIZE, e.g. "s0800p=18" for the 2 KB buffer.
 */
 static	W	send_request(const UB *payload, W len, W wantreply, UB *rbuf, W rbufmax)
 {
 	static	const	UB	*bin2hex = "0123456789abcdef";
 	static	UB	buf[] = "AT+CIPSEND=0000\r\n";
-	UB	sparam[1 + 8];
+	UB	sparam[5];
 	UB	*p;
-	W	l, l2, sl, sh;
+	W	l, l2, sl;
 
-	sl = 0;
-	sparam[sl++] = 's';
-	for (sh = 0; (RECVBUF_SIZE >> (sh + 4)) != 0; sh += 4)
-		;
-	for (; sh >= 0; sh -= 4)
-		sparam[sl++] = bin2hex[(RECVBUF_SIZE >> sh) & 0xf];
+	sparam[0] = 's';
+	sparam[1] = bin2hex[(RECVBUF_SIZE >> 12) & 0xf];
+	sparam[2] = bin2hex[(RECVBUF_SIZE >> 8) & 0xf];
+	sparam[3] = bin2hex[(RECVBUF_SIZE >> 4) & 0xf];
+	sparam[4] = bin2hex[RECVBUF_SIZE & 0xf];
+	sl = 5;
 
 	c20p1305vcounter += 2;
 	c20p1305nonce[4] = c20p1305nvcounter >> 24;
