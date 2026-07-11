@@ -701,6 +701,10 @@ static	W	ipd_getc(void)
 }
 
 
+/* Decoded reply capacity (nonce 12 + body + tag 16), advertised to the
+   server as the "s" transport parameter so it never sends more than fits. */
+#define	RECVBUF_SIZE	2048
+
 /*
 	One encrypted exchange with the server.
 
@@ -709,13 +713,27 @@ static	W	ipd_getc(void)
 	its replay state, but sends no body back and we don't wait for one.
 	With wantreply=1 the decrypted reply body is copied into rbuf; returns
 	its length (0 = empty/none, -1 = nonce/MAC mismatch).
+
+	The plaintext starts with transport parameters — /[G-Zg-z][0-9A-Fa-f]+/
+	tokens, key letters and hex digits being disjoint alphabets so no
+	escaping is needed — followed by the application payload from the first
+	/[G-Zg-z]=/ marker on. The only parameter sent is "s<hex>": RECVBUF_SIZE,
+	e.g. "s800p=18" for a 2 KB buffer.
 */
 static	W	send_request(const UB *payload, W len, W wantreply, UB *rbuf, W rbufmax)
 {
 	static	const	UB	*bin2hex = "0123456789abcdef";
 	static	UB	buf[] = "AT+CIPSEND=0000\r\n";
+	UB	sparam[1 + 8];
 	UB	*p;
-	W	l, l2;
+	W	l, l2, sl, sh;
+
+	sl = 0;
+	sparam[sl++] = 's';
+	for (sh = 0; (RECVBUF_SIZE >> (sh + 4)) != 0; sh += 4)
+		;
+	for (; sh >= 0; sh -= 4)
+		sparam[sl++] = bin2hex[(RECVBUF_SIZE >> sh) & 0xf];
 
 	c20p1305vcounter += 2;
 	c20p1305nonce[4] = c20p1305nvcounter >> 24;
@@ -738,7 +756,7 @@ static	W	send_request(const UB *payload, W len, W wantreply, UB *rbuf, W rbufmax
 	l2 = 0;
 	while ((req2[l2]))
 		l2++;
-	l = l + l2 + 24 + len * 2 + 32;
+	l = l + l2 + 24 + (sl + len) * 2 + 32;
 	p = buf;
 	while (*(p++) != '=')
 		;
@@ -756,6 +774,7 @@ static	W	send_request(const UB *payload, W len, W wantreply, UB *rbuf, W rbufmax
 
 	wroom4cmd(req, NULL, -1);
 	c20p1305_send(NULL, -1, stored_key, c20p1305nonce, wroom4ub);
+	c20p1305_send(sparam, sl, stored_key, c20p1305nonce, wroom4ub);
 	c20p1305_send((UB*)payload, len, stored_key, c20p1305nonce, wroom4ub);
 	c20p1305_send(NULL, 0, stored_key, c20p1305nonce, wroom4ub);
 	wroom4cmd(req2, NULL, -1);
@@ -764,7 +783,7 @@ static	W	send_request(const UB *payload, W len, W wantreply, UB *rbuf, W rbufmax
 		return 0;
 	}
 	{
-		static	UB	recvbuf[2048];
+		static	UB	recvbuf[RECVBUF_SIZE];
 		static	UB	mac[16];
 		static	const	UB	marker[] = "key0c20=";
 		const	UB	*mp;
@@ -1959,7 +1978,9 @@ int main(void)
 			while (!usb_is_detached()) {
 				if (app_done && g_wifi_ok) {
 					static const UB *bin2hex = (const UB *)"0123456789abcdef";
-					static uint8_t prbuf[1024];
+					/* send_request advertises RECVBUF_SIZE via "s",
+					   so accept the largest body that can carry. */
+					static uint8_t prbuf[RECVBUF_SIZE - 12 - 16];
 					UB  preq[4];
 					W   plen;
 					int pst;

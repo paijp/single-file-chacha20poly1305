@@ -92,6 +92,44 @@ if ($last !== false) {
 $c = new chacha20();
 $out = $c->crypt($body, $key, $nonce);
 
+/* Transport parameters: the plaintext may start with /[G-Zg-z][0-9A-Fa-f]+/
+   tokens (key letters and hex digits are disjoint alphabets, so no escaping);
+   the application payload runs from the first /[G-Zg-z]=/ marker to the end
+   (binary). Parameters are consumed here and NOT forwarded to the FIFO.
+
+     s<hex> — the device's decoded receive capacity in bytes
+              (12 nonce + body + 16 tag), e.g. "s800" = 2 KB.
+
+   Payloads from older firmware ("p=18", bare digits, ...) fall through
+   unchanged: a leading /[G-Zg-z]=/ marker or any non-key byte stops the
+   scan. */
+$dev_cap = 0;
+$i = 0;
+$n = count($out);
+while ($i < $n) {
+	$k = chr($out[$i]);
+	if (!preg_match('/^[G-Zg-z]$/', $k))
+		break;
+	if ($i + 1 < $n && $out[$i + 1] == ord('='))
+		break;			/* binary marker: payload starts here */
+	$v = "";
+	$j = $i + 1;
+	while ($j < $n && preg_match('/^[0-9A-Fa-f]$/', chr($out[$j])))
+		$v .= chr($out[$j++]);
+	if ($v === "")
+		break;			/* malformed: treat the rest as payload */
+	if ($k == 's')
+		$dev_cap = hexdec($v);
+	$i = $j;
+}
+$out = array_slice($out, $i);
+
+/* Reply budget: what fits in the device's buffer next to nonce + tag.
+   Without an s parameter assume the legacy firmware's 1000 bytes. */
+$reply_max = 1000;
+if ($dev_cap > 0)
+	$reply_max = max(0, min($dev_cap - 12 - 16, 60000));
+
 /* nonce[11] LSB set = the device does not want a response. The payload is
    still delivered to from_<id> and the state still advances; only the
    to_<id> drain and the encrypted reply are skipped. */
@@ -106,8 +144,9 @@ $nonce[11] |= 1;
 	nobody holds the FIFO open the bytes are dropped (best effort).
 
 	to_<id> — local -> device. Writers just `printf '...' > keys/to_<id>`.
-	to-drain.sh reads up to 1000 bytes per request (the firmware's recvbuf
-	is 2048: (12 nonce + 1000 body + 16 tag) * 2 hex) and parks a detached
+	to-drain.sh reads up to $reply_max bytes per request — sized from the
+	device's "s" transport parameter (its decoded receive capacity minus
+	the 12-byte nonce and 16-byte tag), 1000 when absent — and parks a detached
 	10 s holder on the pipe, so unread bytes survive between requests without any
 	daemon. Writers that arrive while no holder is alive block in open()
 	until the next request. Bytes are lost only when data sits unread
@@ -134,13 +173,15 @@ $resp_hex = "";
 if ($wantreply) {
 	if ($bridged) {
 		$s = (string)shell_exec("sh " . escapeshellarg(__DIR__ . "/to-drain.sh")
-		                        . " " . escapeshellarg($to_fifo));
+		                        . " " . escapeshellarg($to_fifo)
+		                        . " " . escapeshellarg((string)$reply_max));
 		$reply_src = array();
 		for ($i=0; $i<strlen($s); $i++)
 			$reply_src[] = ord(substr($s, $i, 1));
 		$out = $reply_src;
 	} else {
 		$out[] = 0x72;	/* response marker (echo mode) */
+		$out = array_slice($out, 0, $reply_max);
 	}
 
 	$c = new chacha20();
