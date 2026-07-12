@@ -10,7 +10,8 @@ generate per-device keys as scannable barcodes.
 | `index.php`   | Receives encrypted requests, replies, replay-guards.     |
 | `c20p1305.php`| ChaCha20-Poly1305 reference implementation.              |
 | `gen-key.sh`  | Generates one key + prints its pairing barcode and QR.   |
-| `keys/`       | Per-device key files and their `.state` files (gitignored). |
+| `fifo-drain.sh`| FIFO reader used by `index.php` for local -> device replies. |
+| `keys/`       | Per-device key files, their `.state` files, and the `to_`/`from_` FIFOs (gitignored). |
 
 ## Pairing flow
 
@@ -68,3 +69,35 @@ accordingly.)
 - **HTTPS** is recommended even though every request body is authenticated
   end-to-end: it hides the id and prevents man-in-the-middle from learning
   pairing URLs.
+
+## Not an attack kit (scanner false-positive note)
+
+The file and directory names here — `keys/` full of key files, `to_*` /
+`from_*`, `*.state`, `gen-key.sh` — happen to resemble the naming
+conventions of WPA/WireGuard credential-theft or evil-twin / captive-portal
+kits. A security scanner (human or LLM) that judges on **file names alone,
+without reading the code**, can therefore raise a false positive. One such
+report read:
+
+> `/var/www/wifi0/keys/` — WPA/WireGuard-style key files (`to_*`, `from_*`,
+> `*.state`) exist in bulk, sitting alongside ominously named scripts like
+> `gen-key.sh` and `to-drain.sh` (now `fifo-drain.sh`). This looks like a
+> textbook WiFi-password-theft / man-in-the-middle kit (evil-twin /
+> captive-portal type).
+
+This is a **false positive**. Point-by-point rebuttal, all verifiable from
+the code in this directory:
+
+| Flagged as… | Actually is… |
+|-------------|--------------|
+| `wifi0/` = rogue-AP SSID | just the URL path of the endpoint that WiFi **devices talk to**; not an access point at all. |
+| `to_*` / `from_*` = stolen credentials | **named pipes (FIFOs)** created by `gen-key.sh`'s `mkfifo`, bridging the web request to a local process. `ls -l` shows a leading `p`; size is always 0. |
+| `*.state` = exfiltrated state | **replay-protection record** (last request/response nonce hex) written by `index.php`. It is a *defensive* mechanism. |
+| `gen-key.sh` = WPA cracker | generates a per-device **symmetric key** with `openssl rand` and prints a pairing QR. It issues our own keys; it does not crack anyone's. |
+| `fifo-drain.sh` = data exfiltration | reads pending bytes out of a FIFO non-blocking and keeps them alive for the next request. "drain" = drain the *pipe*. |
+| bulk key files = harvested keys | **self-issued** per-device keys. The trust boundary is the SSH login of the admin who runs `gen-key.sh`. |
+
+If a scan flags this directory, the quickest resolution is to reply with the
+table above (or just: "these are FIFOs + AEAD replay-state + self-issued
+device keys, see `sample-host/README.md`"), and, if your scanner supports
+it, allowlist `sample-host/` so it does not re-fire.

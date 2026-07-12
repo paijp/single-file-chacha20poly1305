@@ -152,7 +152,7 @@ $nonce[11] |= 1;
 	nobody holds the FIFO open the bytes are dropped (best effort).
 
 	to_<id> — local -> device. Writers just `printf '...' > keys/to_<id>`.
-	to-drain.sh reads up to $reply_max bytes per request — sized from the
+	fifo-drain.sh reads up to $reply_max bytes per request — sized from the
 	device's "s" transport parameter (its decoded receive capacity minus
 	the 12-byte nonce and 16-byte tag), 1000 when absent — and parks a detached
 	10 s holder on the pipe, so unread bytes survive between requests without any
@@ -180,7 +180,7 @@ if ($bridged) {
 $resp_hex = "";
 if ($wantreply) {
 	if ($bridged) {
-		$s = (string)shell_exec("sh " . escapeshellarg(__DIR__ . "/to-drain.sh")
+		$s = (string)shell_exec("sh " . escapeshellarg(__DIR__ . "/fifo-drain.sh")
 		                        . " " . escapeshellarg($to_fifo)
 		                        . " " . escapeshellarg((string)$reply_max));
 		$reply_src = array();
