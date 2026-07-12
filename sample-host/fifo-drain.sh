@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# to-drain.sh <fifo> [max-bytes] — used by index.php; not usually run by hand.
+# fifo-drain.sh <fifo> [max-bytes] — used by index.php; not usually run by hand.
 #
 # Print up to max-bytes (default 1000; index.php passes the reply budget
 # derived from the device's "s" parameter) from the FIFO to stdout without

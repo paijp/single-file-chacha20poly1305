@@ -37,7 +37,7 @@ printf '%s' "$hex" > "$tmp"
 chmod 640 "$tmp"
 mv "$tmp" "$KEYS_DIR/$id"
 
-# Bridge to local processes (both FIFOs; see index.php and to-drain.sh):
+# Bridge to local processes (both FIFOs; see index.php and fifo-drain.sh):
 #   from_<id> — device -> local. Tail it with:      cat <>from_<id>
 #   to_<id>   — local -> device. Queue bytes with:  printf '...' > to_<id>
 mkfifo -m 660 "$KEYS_DIR/from_$id" "$KEYS_DIR/to_$id"
